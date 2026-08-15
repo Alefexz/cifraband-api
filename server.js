@@ -1,10 +1,19 @@
 // cifra_band/functions/server.js
 
 const express = require('express');
-const puppeteer = require('puppeteer');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Função para limpar nomes (ex: "Lugar Secreto" vira "lugar-secreto")
+function formatSlug(text) {
+    return text.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Remove acentos
+        .replace(/[^a-z0-9 ]/g, '') // Remove caracteres especiais
+        .replace(/\s+/g, '-'); // Troca espaço por traço
+}
 
 app.get('/searchSong', async (req, res) => {
     const artist = req.query.artist;
@@ -14,63 +23,38 @@ app.get('/searchSong', async (req, res) => {
         return res.status(400).send('Informe artist e track.');
     }
 
-    let browser;
     try {
-        // O Render precisa desse --no-sandbox para rodar o Puppeteer
-        browser = await puppeteer.launch({ 
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-        });
+        const artistSlug = formatSlug(artist);
+        const trackSlug = formatSlug(track);
         
-        const page = await browser.newPage();
-        
-        const searchQuery = `${track} ${artist}`.replace(/ /g, '-').toLowerCase();
-        const searchUrl = `https://www.cifraclub.com.br/?q=${searchQuery}`;
-        
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+        // Acessa o Cifra Club diretamente pela URL
+        const songUrl = `https://www.cifraclub.com.br/${artistSlug}/${trackSlug}/`;
 
-        // Pega o primeiro link da busca
-        const songUrl = await page.evaluate(() => {
-            const firstResult = document.querySelector('.gsc-thumbnail-inside a.gs-title');
-            return firstResult ? firstResult.href : null;
-        });
+        const songResponse = await axios.get(songUrl);
+        const $ = cheerio.load(songResponse.data);
 
-        if (!songUrl) {
-            await browser.close();
+        const content = $('pre').first().text() || '';
+        const key = $('#cifra_tom a').text() || '';
+        let capo = $('#cifra_capo a').text() || '';
+        capo = capo.replace('ª', '');
+
+        if (!content) {
             return res.status(404).send('Cifra não encontrada no Cifra Club.');
         }
 
-        // Abre a página da cifra
-        await page.goto(songUrl, { waitUntil: 'domcontentloaded' });
-
-        // Extrai o conteúdo e os dados
-        const songData = await page.evaluate(() => {
-            const preElement = document.querySelector('pre');
-            const keyElement = document.querySelector('#cifra_tom a');
-            const capoElement = document.querySelector('#cifra_capo a');
-            
-            const content = preElement ? preElement.innerText : '';
-            const key = keyElement ? keyElement.innerText : '';
-            const capo = capoElement ? capoElement.innerText.replace('ª', '') : '';
-            
-            return { content, key, capo };
-        });
-
-        await browser.close();
-
         // Limpa o conteúdo extraído
-        let cleanContent = songData.content
-            .replace(/\[\/?(b|i)\]/g, '') // Remove tags do Cifra Club
+        let cleanContent = content
+            .replace(/\[\/?(b|i)\]/g, '')
             .split('\n')
-            .filter(line => line.trim() !== '') // Remove linhas em branco
+            .filter(line => line.trim() !== '')
             .join('\n');
 
         const finalResult = {
             title: track,
             artist: artist,
-            originalKey: songData.key,
-            capo: songData.capo,
-            shapeKey: songData.key, 
+            originalKey: key,
+            capo: capo,
+            shapeKey: key,
             content: cleanContent,
             url: songUrl
         };
@@ -78,9 +62,8 @@ app.get('/searchSong', async (req, res) => {
         res.status(200).json(finalResult);
 
     } catch (error) {
-        if (browser) await browser.close();
-        console.error('Erro no servidor:', error);
-        res.status(500).send('Erro interno do servidor.');
+        console.error('Erro na raspagem:', error.message);
+        res.status(404).send('Cifra não encontrada ou URL inválida.');
     }
 });
 
