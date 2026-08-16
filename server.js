@@ -9,7 +9,7 @@ const port = process.env.PORT || 3000;
 
 const CACHE_TTL = 30 * 60 * 1000;
 const MAX_CACHE_ITEMS = 200;
-const REQUEST_TIMEOUT = 5000; // Reduzido para 5s por tentativa para não demorar muito
+const REQUEST_TIMEOUT = 5000; // 5 segundos por tentativa
 
 const cache = new Map();
 const inFlight = new Map();
@@ -18,58 +18,44 @@ app.get('/', (req, res) => {
     res.status(200).json({ status: 'online', service: 'Cifra Band API', version: 'V3-Pipeline', timestamp: new Date().toISOString() });
 });
 
-// ─────────────────────────────────────────────
-// UTILITÁRIOS E SLUGS
-// ─────────────────────────────────────────────
-
 function formatArtistSlug(text) {
     let clean = String(text).toLowerCase();
     clean = clean.split(',')[0].split('&')[0].split('+')[0].split('feat')[0].split('part')[0].trim();
     
-    // ⚠️ ALIAS INTELIGENTE PARA CANTORES
-    if (clean === 'fhop music' || clean === 'fhop') {
-        clean = 'florianopolis-house-of-prayer';
-    }
+    // ALIAS FHOP
+    if (clean === 'fhop music' || clean === 'fhop') return 'florianopolis-house-of-prayer';
 
     return clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
 }
 
 function formatTrackSlug(text) {
     let clean = String(text).toLowerCase();
-    clean = clean.replace(/\(.*\)/g, '').replace(/\[.*\]/g, ''); // Tira (Ao Vivo)
-    clean = clean.replace(/[\/\+]/g, ' '); // Troca barras e mais por espaço
+
+    // ALIAS MÚSICAS
+    if (clean.includes('ah, jesus') || clean.includes('ah jesus')) return 'ah-jesus-quem-e-esse';
+    if (clean.includes('sublime')) return 'sublime-uma-vez';
+
+    clean = clean.replace(/\(.*\)/g, '').replace(/\[.*\]/g, ''); 
+    clean = clean.replace(/[\/\+]/g, ' '); 
     return clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
 }
-
-// ─────────────────────────────────────────────
-// PIPELINE DE DESCOBERTA (O MOTOR DE VERDADE)
-// ─────────────────────────────────────────────
 
 function generateCandidates(artist, track) {
     const a = formatArtistSlug(artist);
     const t = formatTrackSlug(track);
     const urls = [];
 
-    // 1. O caso especial do "Ah Jesus"
     if (t.includes('ah-jesus') && t.includes('coracao')) {
         urls.push(`https://www.cifraclub.com.br/${a}/ah-jesus-coracao-igual-ao-teu-2-2/`);
         urls.push(`https://www.cifraclub.com.br/${a}/ah-jesus-quem-e-esse/`);
     }
 
-    // 2. A tentativa Normal
     urls.push(`https://www.cifraclub.com.br/${a}/${t}/`);
-    
-    // 3. Fallbacks comuns do CifraClub (Quando a página principal é só Letra)
     urls.push(`https://www.cifraclub.com.br/${a}/${t}-2/`);
     urls.push(`https://www.cifraclub.com.br/${a}/${t}-3/`);
 
-    // Remove duplicatas pra não perder tempo
     return [...new Set(urls)];
 }
-
-// ─────────────────────────────────────────────
-// CACHE E EXTRAÇÃO
-// ─────────────────────────────────────────────
 
 function cleanExpiredCache() {
     const now = Date.now();
@@ -133,10 +119,6 @@ function cleanSongContent(content) {
     return content.replace(/\[\/?(b|i)\]/g, '').replace(/\r/g, '').split('\n').filter(line => line.trim()).join('\n').trim();
 }
 
-// ─────────────────────────────────────────────
-// ROTA PRINCIPAL
-// ─────────────────────────────────────────────
-
 app.get('/searchSong', async (req, res) => {
     const artist = String(req.query.artist || '').trim();
     const track = String(req.query.track || '').trim();
@@ -146,16 +128,13 @@ app.get('/searchSong', async (req, res) => {
     const cacheKey = `${formatArtistSlug(artist)}-${formatTrackSlug(track)}`;
 
     const cached = getCache(cacheKey);
-    if (cached) {
-        console.log(`⚡ CACHE: ${artist} - ${track}`);
-        return res.status(200).json(cached);
-    }
+    if (cached) return res.status(200).json(cached);
 
     if (inFlight.has(cacheKey)) {
         try {
             return res.status(200).json(await inFlight.get(cacheKey));
         } catch (error) {
-            return res.status(500).json({ error: 'search_error', message: 'Erro ao buscar cifra.' });
+            return res.status(500).json({ error: 'search_error', message: 'Erro interno.' });
         }
     }
 
@@ -163,48 +142,33 @@ app.get('/searchSong', async (req, res) => {
         const candidates = generateCandidates(artist, track);
         let foundResult = null;
 
-        console.log(`🔎 Buscando: ${artist} - ${track}`);
-
-        // O LOOP DE DESCOBERTA
         for (const url of candidates) {
-            console.log(`📡 Tentando URL: ${url}`);
             try {
                 const response = await axios.get(url, {
                     timeout: REQUEST_TIMEOUT,
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
                     validateStatus: status => status >= 200 && status < 400
                 });
 
                 const $ = cheerio.load(response.data);
                 const content = $('pre').first().text();
 
-                // SE TEM PRE, É CIFRA. SE TIVER VAZIO, É LETRA (PULA!)
                 if (content.trim()) {
                     const keyInfo = extractKeyInfo($, content);
                     foundResult = {
                         title: track, artist, originalKey: keyInfo.originalKey, shapeKey: keyInfo.shapeKey,
                         capo: keyInfo.capo, content: cleanSongContent(content), url: url, source: 'cifraclub'
                     };
-                    console.log(`✅ Cifra Encontrada em: ${url}`);
-                    break; // Sai do loop, achamos a cifra!
-                } else {
-                    console.log(`⚠️ Página encontrada, mas é Letra (sem cifra). Tentando próxima...`);
+                    break; 
                 }
-            } catch (err) {
-                if (err.response?.status === 404) {
-                    console.log(`❌ 404 em: ${url} - Tentando próxima...`);
-                } else {
-                    console.log(`⚠️ Erro de rede em ${url}`);
-                }
-            }
+            } catch (err) { }
         }
 
-        // FIM DO LOOP. Achou algo?
         if (foundResult) {
             saveCache(cacheKey, foundResult);
             return foundResult;
         } else {
-            const notFoundError = new Error('Cifra não encontrada no Cifra Club após tentar variações.');
+            const notFoundError = new Error('Cifra não encontrada no Cifra Club.');
             notFoundError.code = 'SONG_NOT_FOUND';
             notFoundError.statusCode = 404;
             throw notFoundError;
