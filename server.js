@@ -9,31 +9,29 @@ const port = process.env.PORT || 3000;
 
 const CACHE_TTL = 30 * 60 * 1000;
 const MAX_CACHE_ITEMS = 200;
-const REQUEST_TIMEOUT = 5000; 
+const REQUEST_TIMEOUT = 5000;
 
 const cache = new Map();
 const inFlight = new Map();
 
 app.get('/', (req, res) => {
-    res.status(200).json({ status: 'online', service: 'Cifra Band API', version: 'V3-Final', timestamp: new Date().toISOString() });
+    res.status(200).json({ status: 'online', service: 'Cifra Band API', version: 'V4-Culto', timestamp: new Date().toISOString() });
 });
 
 function formatArtistSlug(text) {
     let clean = String(text).toLowerCase();
     clean = clean.split(',')[0].split('&')[0].split('+')[0].split('feat')[0].split('part')[0].trim();
-    
     if (clean === 'fhop music' || clean === 'fhop') return 'florianopolis-house-of-prayer';
-
     return clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
 }
 
 function formatTrackSlug(text) {
     let clean = String(text).toLowerCase();
 
-    // REMOVI O ALIAS QUEBRADO DO AH JESUS! Agora só o Sublime fica com exceção.
     if (clean.includes('sublime')) return 'sublime-uma-vez';
 
-    clean = clean.replace(/\(.*\)/g, '').replace(/\[.*\]/g, ''); 
+    // Tira os (Ao Vivo) etc
+    clean = clean.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, ''); 
     clean = clean.replace(/[\/\+]/g, ' '); 
     return clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
 }
@@ -43,14 +41,27 @@ function generateCandidates(artist, track) {
     const t = formatTrackSlug(track);
     const urls = [];
 
-    // O MILAGRE DA JULLIANY SOUZA: Se ele ler "ah-jesus" e "coracao" no nome que você buscou, ele joga o "-2-2"
-    if (t.includes('ah-jesus') && t.includes('coracao')) {
+    // O MILAGRE DA JULLIANY SOUZA
+    if (t.includes('ah-jesus') || t.includes('coracao-igual')) {
         urls.push(`https://www.cifraclub.com.br/${a}/ah-jesus-coracao-igual-ao-teu-2-2/`);
+    }
+
+    // O MILAGRE DA ALINE BARROS (Consagração)
+    if (t.includes('consagracao')) {
+        urls.push(`https://www.cifraclub.com.br/${a}/consagracao/`);
     }
 
     urls.push(`https://www.cifraclub.com.br/${a}/${t}/`);
     urls.push(`https://www.cifraclub.com.br/${a}/${t}-2/`);
     urls.push(`https://www.cifraclub.com.br/${a}/${t}-3/`);
+
+    // INTELIGÊNCIA PARA MEDLEYS: Se tem traço, tenta só a primeira música!
+    if (t.includes('-')) {
+        const firstPart = t.split('-')[0];
+        if (firstPart.length > 2) {
+            urls.push(`https://www.cifraclub.com.br/${a}/${firstPart}/`);
+        }
+    }
 
     return [...new Set(urls)];
 }
@@ -84,7 +95,6 @@ function getCache(key) {
 
 function extractKeyInfo($, contentText) {
     const bodyText = $('body').text().replace(/\u00a0/g, ' ').replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/\n+/g, '\n').trim();
-
     let originalKey = '';
     let shapeKey = '';
     let capo = '';
@@ -107,7 +117,6 @@ function extractKeyInfo($, contentText) {
         const firstChordMatch = contentText.match(/\b[A-G][#b]?(m|maj|dim|aug|sus|add|M)?\d*(\/[A-G][#b]?)?\b/);
         if (firstChordMatch) originalKey = firstChordMatch[0].replace(/m|maj|dim|aug|sus|add|M|\d|\/.*/g, ''); 
     }
-
     if (!shapeKey && originalKey) shapeKey = originalKey;
 
     return { originalKey, shapeKey, capo };
@@ -124,7 +133,6 @@ app.get('/searchSong', async (req, res) => {
     if (!artist || !track) return res.status(400).json({ error: 'missing_parameters', message: 'Informe artist e track.' });
 
     const cacheKey = `${formatArtistSlug(artist)}-${formatTrackSlug(track)}`;
-
     const cached = getCache(cacheKey);
     if (cached) return res.status(200).json(cached);
 
@@ -144,7 +152,12 @@ app.get('/searchSong', async (req, res) => {
             try {
                 const response = await axios.get(url, {
                     timeout: REQUEST_TIMEOUT,
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    headers: { 
+                        // IDENTIDADE VIP PARA O CIFRA CLUB NÃO BLOQUEAR!
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+                    },
                     validateStatus: status => status >= 200 && status < 400
                 });
 
@@ -184,4 +197,4 @@ app.get('/searchSong', async (req, res) => {
     }
 });
 
-app.listen(port, () => console.log(`🚀 Cifra Band API V3-Final rodando na porta ${port}`));
+app.listen(port, () => console.log(`🚀 Cifra Band API V4-Culto rodando na porta ${port}`));
