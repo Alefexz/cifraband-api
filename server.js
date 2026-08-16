@@ -9,20 +9,19 @@ const port = process.env.PORT || 3000;
 
 const CACHE_TTL = 30 * 60 * 1000;
 const MAX_CACHE_ITEMS = 200;
-const REQUEST_TIMEOUT = 5000; // 5 segundos por tentativa
+const REQUEST_TIMEOUT = 5000; 
 
 const cache = new Map();
 const inFlight = new Map();
 
 app.get('/', (req, res) => {
-    res.status(200).json({ status: 'online', service: 'Cifra Band API', version: 'V3-Pipeline', timestamp: new Date().toISOString() });
+    res.status(200).json({ status: 'online', service: 'Cifra Band API', version: 'V3-Final', timestamp: new Date().toISOString() });
 });
 
 function formatArtistSlug(text) {
     let clean = String(text).toLowerCase();
     clean = clean.split(',')[0].split('&')[0].split('+')[0].split('feat')[0].split('part')[0].trim();
     
-    // ALIAS FHOP
     if (clean === 'fhop music' || clean === 'fhop') return 'florianopolis-house-of-prayer';
 
     return clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
@@ -31,8 +30,7 @@ function formatArtistSlug(text) {
 function formatTrackSlug(text) {
     let clean = String(text).toLowerCase();
 
-    // ALIAS MÚSICAS
-    if (clean.includes('ah, jesus') || clean.includes('ah jesus')) return 'ah-jesus-quem-e-esse';
+    // REMOVI O ALIAS QUEBRADO DO AH JESUS! Agora só o Sublime fica com exceção.
     if (clean.includes('sublime')) return 'sublime-uma-vez';
 
     clean = clean.replace(/\(.*\)/g, '').replace(/\[.*\]/g, ''); 
@@ -45,9 +43,9 @@ function generateCandidates(artist, track) {
     const t = formatTrackSlug(track);
     const urls = [];
 
+    // O MILAGRE DA JULLIANY SOUZA: Se ele ler "ah-jesus" e "coracao" no nome que você buscou, ele joga o "-2-2"
     if (t.includes('ah-jesus') && t.includes('coracao')) {
         urls.push(`https://www.cifraclub.com.br/${a}/ah-jesus-coracao-igual-ao-teu-2-2/`);
-        urls.push(`https://www.cifraclub.com.br/${a}/ah-jesus-quem-e-esse/`);
     }
 
     urls.push(`https://www.cifraclub.com.br/${a}/${t}/`);
@@ -186,4 +184,4 @@ app.get('/searchSong', async (req, res) => {
     }
 });
 
-app.listen(port, () => console.log(`🚀 Cifra Band API V3-Pipeline rodando na porta ${port}`));
+app.listen(port, () => console.log(`🚀 Cifra Band API V3-Final rodando na porta ${port}`));
