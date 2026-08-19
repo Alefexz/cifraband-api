@@ -130,10 +130,40 @@ const GENERIC_WORDS = new Set([
     'indefinida'
 ]);
 
+// FIX: sem isso, palavras como "que" e "a" contavam como sobreposição
+// de verdade entre duas músicas diferentes (foi o que fez "Ainda Que a
+// Figueira" dar match com "Creio Que Tu És a Cura" com score 61,
+// passando do piso de aceite). São palavras curtas e comuns demais pra
+// distinguir uma música da outra.
+const STOPWORDS = new Set([
+    'a', 'o', 'as', 'os', 'de', 'da', 'do', 'das', 'dos',
+    'e', 'em', 'um', 'uma', 'uns', 'umas',
+    'no', 'na', 'nos', 'nas', 'para', 'por', 'com', 'se',
+    'que', 'ao', 'aos', 'a', 'as',
+    'tu', 'eu', 'teu', 'tua', 'meu', 'minha', 'seu', 'sua',
+    'nosso', 'nossa', 'es', 'sou', 'sao', 'foi', 'esta'
+]);
+
 function significantTokens(text) {
     return tokenize(text).filter(
-        token => !GENERIC_WORDS.has(token)
+        token =>
+            !GENERIC_WORDS.has(token) &&
+            !STOPWORDS.has(token)
     );
+}
+
+// FIX: parênteses/colchetes atrapalham a pontuação tanto quanto
+// atrapalhavam a geração de slug — mas antes só eram removidos na
+// hora de montar o slug, nunca na hora de comparar/pontuar. O caso
+// real: "Rendido Estou (Arms Open Wide)" (pedido) vs "Rendido Estou
+// (part. Fernandinho e Bruna Karla)" (página real) — dois parênteses
+// que não têm nada a ver um com o outro, derrubando o score de uma
+// música que na real bate 100%.
+function coreTitle(text) {
+    return String(text || '')
+        .replace(/\(.*?\)/g, '')
+        .replace(/\[.*?\]/g, '')
+        .trim();
 }
 
 // ============================================================
@@ -168,7 +198,12 @@ function formatArtistSlug(text) {
         'florianopolis house of prayer':
             'florianopolis-house-of-prayer',
 
-        'aline barros': 'aline-barros'
+        'aline barros': 'aline-barros',
+
+        // Confirmado ao vivo contra o site: o slug real é só "nadson",
+        // sem "o ferinha" — decisão editorial do Cifra Club, impossível
+        // de deduzir por regra.
+        'nadson o ferinha': 'nadson'
     };
 
     if (aliases[normalized]) {
@@ -207,6 +242,16 @@ function generateArtistSlugs(artist) {
 
     add(formatArtistSlug(original));
     add(normalized);
+
+    // Heurística geral (além do alias específico acima): vários artistas
+    // "de nome composto" no Cifra Club usam só a primeira palavra como
+    // slug — foi exatamente o caso do "nadson o ferinha" -> "nadson".
+    // Custa pouco tentar, e a validação por score protege contra pegar
+    // o artista errado por engano.
+    const firstWord = normalized.split(' ')[0];
+    if (firstWord && firstWord.length > 2) {
+        add(firstWord);
+    }
 
     if (normalized === 'morada') {
         add('ministerio-morada');
@@ -842,10 +887,13 @@ function similarity(a, b) {
 // ============================================================
 
 function scoreSong(requestedArtist, requestedTrack, foundArtist, foundTitle) {
+    const coreRequestedTrack = coreTitle(requestedTrack);
+    const coreFoundTitle = coreTitle(foundTitle);
+
     const titleSimilarity =
         similarity(
-            requestedTrack,
-            foundTitle
+            coreRequestedTrack,
+            coreFoundTitle
         );
 
     const artistSimilarity =
@@ -859,10 +907,10 @@ function scoreSong(requestedArtist, requestedTrack, foundArtist, foundTitle) {
         artistSimilarity * 25;
 
     const normalizedRequested =
-        normalizeText(requestedTrack);
+        normalizeText(coreRequestedTrack);
 
     const normalizedFound =
-        normalizeText(foundTitle);
+        normalizeText(coreFoundTitle);
 
     if (
         normalizedRequested ===
@@ -872,10 +920,10 @@ function scoreSong(requestedArtist, requestedTrack, foundArtist, foundTitle) {
     }
 
     const requestedTokens =
-        significantTokens(requestedTrack);
+        significantTokens(coreRequestedTrack);
 
     const foundTokens =
-        significantTokens(foundTitle);
+        significantTokens(coreFoundTitle);
 
     if (
         requestedTokens.length > 0 &&
