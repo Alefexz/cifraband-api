@@ -9,6 +9,19 @@ const cheerio = require('cheerio');
 
 const app = express();
 
+// FIX: sem isso, qualquer chamada vinda de um app Flutter Web (ou de
+// qualquer origem diferente do próprio servidor) falha por CORS antes
+// de chegar no endpoint.
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(204);
+    }
+    next();
+});
+
 const port = process.env.PORT || 3000;
 
 const CIFRA_BASE = 'https://www.cifraclub.com.br';
@@ -26,6 +39,13 @@ const SEARCH_CONCURRENCY = 5;
 // ============================================================
 // CACHE
 // ============================================================
+// ATENÇÃO: isso é memória do processo. No Render free tier o servidor
+// derruba depois de ~15min sem tráfego e sobe zerado — ou seja, esse
+// cache (e o aprendizado de aliases) não sobrevive entre "sonos" do
+// serviço. Funciona bem enquanto o processo está de pé, mas não é
+// persistente de verdade. Se quiser resolver isso direito, dá pra
+// trocar por um banco externo (Firestore funciona normal fora do
+// Firebase Functions, só precisa de uma service account).
 
 const songCache = new Map();
 const catalogCache = new Map();
@@ -590,12 +610,57 @@ function cleanSongContent(content) {
 // METADADOS
 // ============================================================
 
+// FIX: $('h2').first() estava pegando um heading de navegação
+// ("Menu principal") em quase toda página, não o nome do artista.
+// A description da página segue o padrão "Título - Artista - Cifra
+// Club" de forma bem mais confiável, então agora ela é tentada
+// primeiro; o h2 só entra como fallback, e nunca se o texto bater
+// com um valor conhecido de "lixo" de navegação.
+const BAD_ARTIST_VALUES = new Set([
+    'menu principal',
+    'menu',
+    'cifra club',
+    'navegacao',
+    ''
+]);
+
 function extractPageMetadata($) {
     let title =
         $('h1').first().text().trim();
 
-    let artist =
-        $('h2').first().text().trim();
+    let artist = '';
+
+    const description =
+        $('meta[name="description"]')
+            .attr('content') || '';
+
+    const descMatch =
+        description.match(
+            /-\s*([^-]+?)\s*-\s*Cifra Club/i
+        );
+
+    if (descMatch) {
+        artist = descMatch[1].trim();
+    }
+
+    if (
+        !artist ||
+        BAD_ARTIST_VALUES.has(
+            normalizeText(artist)
+        )
+    ) {
+        const h2Text =
+            $('h2').first().text().trim();
+
+        if (
+            h2Text &&
+            !BAD_ARTIST_VALUES.has(
+                normalizeText(h2Text)
+            )
+        ) {
+            artist = h2Text;
+        }
+    }
 
     if (!title) {
         const ogTitle =
@@ -606,21 +671,6 @@ function extractPageMetadata($) {
             title = ogTitle
                 .replace(/\s*-\s*Cifra Club.*$/i, '')
                 .trim();
-        }
-    }
-
-    if (!artist) {
-        const description =
-            $('meta[name="description"]')
-                .attr('content') || '';
-
-        const match =
-            description.match(
-                /-\s*([^-]+?)\s*-\s*Cifra Club/i
-            );
-
-        if (match) {
-            artist = match[1].trim();
         }
     }
 
@@ -1215,28 +1265,35 @@ async function searchArtistCatalog(
 // ============================================================
 // BUSCA INTERNA DO CIFRA CLUB
 // ============================================================
+// FIX: o site usa caminho com slug (ex: /search/nadson-sinal/), não
+// query string (?q=). Confirmei isso testando de verdade contra o
+// site antes desta correção — usar ?q= provavelmente caía na página
+// genérica de busca, não em resultados da query.
 
 async function searchCifraClub(
     artist,
     track
 ) {
     const queries = [
-        `${artist} ${track}`,
         `${track} ${artist}`,
+        `${artist} ${track}`,
         track
     ];
 
     const links = [];
 
     for (const query of queries) {
+        const slug =
+            normalizeText(query)
+                .replace(/\s+/g, '-');
+
+        if (!slug) continue;
+
         try {
             const response =
                 await axios.get(
-                    `${CIFRA_BASE}/search/`,
+                    `${CIFRA_BASE}/search/${encodeURIComponent(slug)}/`,
                     {
-                        params: {
-                            q: query
-                        },
                         timeout:
                             REQUEST_TIMEOUT,
                         headers: HEADERS
@@ -1285,7 +1342,7 @@ async function searchCifraClub(
             );
         } catch (error) {
             console.log(
-                `⚠️ Busca interna falhou: ${query}`
+                `⚠️ Busca interna falhou: ${query} (${error.message})`
             );
         }
     }
@@ -1404,11 +1461,20 @@ async function findSong(
         '1️⃣ TESTANDO URLs DIRETAS...'
     );
 
+    // FIX: acumula os resultados de TODAS as etapas aqui. Antes,
+    // "results" era reatribuída a cada etapa e a etapa 4 só enxergava
+    // o que a etapa 3 tinha achado — qualquer candidato válido, mas
+    // com score abaixo do limiar de aceite imediato de uma etapa
+    // anterior, era descartado pra sempre em vez de virar fallback.
+    const allResults = [];
+
     let results =
         await searchDirect(
             artist,
             track
         );
+
+    allResults.push(...results);
 
     let best =
         chooseBestResult(
@@ -1441,6 +1507,8 @@ async function findSong(
             track
         );
 
+    allResults.push(...results);
+
     best =
         chooseBestResult(
             results
@@ -1472,6 +1540,8 @@ async function findSong(
             track
         );
 
+    allResults.push(...results);
+
     best =
         chooseBestResult(
             results
@@ -1494,16 +1564,12 @@ async function findSong(
 
     console.log('');
     console.log(
-        '4️⃣ ÚLTIMA TENTATIVA COM TODOS OS RESULTADOS...'
+        `4️⃣ ÚLTIMA TENTATIVA COM TODOS OS RESULTADOS (${allResults.length} ao todo)...`
     );
-
-    const everything = [
-        ...(results || [])
-    ];
 
     best =
         chooseBestResult(
-            everything
+            allResults
         );
 
     if (
@@ -1532,6 +1598,48 @@ async function findSong(
 // ENDPOINT
 // ============================================================
 
+// FIX (rede de segurança): algumas chamadas estão chegando com o
+// nome do artista duplicado dentro do campo track, tipo
+// "Aline Barros - Dança do Pinguim" em vez de só "Dança do Pinguim".
+// Isso confunde geração de slug e pontuação de similaridade. O ideal
+// é achar de onde isso vem no app Flutter e corrigir na origem —
+// mas aqui a gente corta o prefixo se ele bater com o artista
+// informado, pra não depender só disso.
+function stripDuplicatedArtistPrefix(artist, track) {
+    const cleanArtist = String(artist || '').trim();
+    const cleanTrack = String(track || '').trim();
+
+    if (!cleanArtist || !cleanTrack) {
+        return cleanTrack;
+    }
+
+    const escaped = cleanArtist.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        '\\$&'
+    );
+
+    const prefixPattern = new RegExp(
+        `^${escaped}\\s*[-:]\\s*`,
+        'i'
+    );
+
+    if (prefixPattern.test(cleanTrack)) {
+        const stripped =
+            cleanTrack
+                .replace(prefixPattern, '')
+                .trim();
+
+        if (stripped) {
+            console.log(
+                `🧹 Prefixo de artista removido do track: "${cleanTrack}" -> "${stripped}"`
+            );
+            return stripped;
+        }
+    }
+
+    return cleanTrack;
+}
+
 app.get(
     '/searchSong',
     async (req, res) => {
@@ -1540,10 +1648,12 @@ app.get(
                 req.query.artist || ''
             ).trim();
 
-        const track =
+        const track = stripDuplicatedArtistPrefix(
+            artist,
             String(
                 req.query.track || ''
-            ).trim();
+            ).trim()
+        );
 
         if (!artist || !track) {
             return res.status(400).json({
