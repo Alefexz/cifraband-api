@@ -6,16 +6,19 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const admin = require('firebase-admin');
 
 const app = express();
+
+app.use(express.json({ limit: '1mb' }));
 
 // FIX: sem isso, qualquer chamada vinda de um app Flutter Web (ou de
 // qualquer origem diferente do próprio servidor) falha por CORS antes
 // de chegar no endpoint.
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
     if (req.method === 'OPTIONS') {
         return res.sendStatus(204);
     }
@@ -84,6 +87,319 @@ app.get('/', (req, res) => {
         timestamp: new Date().toISOString()
     });
 });
+
+// ============================================================
+// FIREBASE ADMIN / PUSH
+// ============================================================
+
+let firebaseAdminInitError = null;
+
+function getFirebaseAdmin() {
+    if (admin.apps.length) {
+        return admin;
+    }
+
+    try {
+        const rawServiceAccount =
+            process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+            process.env.FIREBASE_SERVICE_ACCOUNT;
+
+        if (rawServiceAccount) {
+            const serviceAccount =
+                JSON.parse(rawServiceAccount);
+
+            if (serviceAccount.private_key) {
+                serviceAccount.private_key =
+                    serviceAccount.private_key.replace(/\\n/g, '\n');
+            }
+
+            admin.initializeApp({
+                credential:
+                    admin.credential.cert(
+                        serviceAccount
+                    )
+            });
+        } else {
+            admin.initializeApp({
+                credential:
+                    admin.credential.applicationDefault()
+            });
+        }
+
+        firebaseAdminInitError = null;
+        return admin;
+    } catch (error) {
+        firebaseAdminInitError = error;
+        console.error(
+            'Falha ao inicializar Firebase Admin:',
+            error.message
+        );
+        return null;
+    }
+}
+
+async function authenticateFirebaseUser(req, res, next) {
+    const authHeader =
+        req.headers.authorization || '';
+
+    const match =
+        String(authHeader).match(/^Bearer\s+(.+)$/i);
+
+    if (!match) {
+        return res.status(401).json({
+            error: 'missing_auth_token',
+            message: 'Envie o ID token do Firebase no header Authorization.'
+        });
+    }
+
+    const firebaseAdmin = getFirebaseAdmin();
+
+    if (!firebaseAdmin) {
+        return res.status(503).json({
+            error: 'firebase_admin_unavailable',
+            message:
+                'Firebase Admin não foi inicializado no servidor.',
+            detail:
+                firebaseAdminInitError?.message ||
+                'Credencial ausente ou inválida.'
+        });
+    }
+
+    try {
+        req.firebaseUser =
+            await firebaseAdmin
+                .auth()
+                .verifyIdToken(match[1]);
+
+        return next();
+    } catch (error) {
+        return res.status(401).json({
+            error: 'invalid_auth_token',
+            message: 'ID token do Firebase inválido ou expirado.'
+        });
+    }
+}
+
+function normalizeNotificationData(data) {
+    const result = {};
+
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return result;
+    }
+
+    for (const [key, value] of Object.entries(data)) {
+        if (value === null || value === undefined) {
+            continue;
+        }
+
+        result[String(key)] = String(value);
+    }
+
+    return result;
+}
+
+app.post(
+    '/notificar',
+    authenticateFirebaseUser,
+    async (req, res) => {
+        const {
+            userIds,
+            title,
+            body,
+            data
+        } = req.body || {};
+
+        if (!Array.isArray(userIds)) {
+            return res.status(400).json({
+                error: 'invalid_user_ids',
+                message: 'userIds precisa ser uma lista de UIDs.'
+            });
+        }
+
+        if (
+            typeof title !== 'string' ||
+            !title.trim() ||
+            typeof body !== 'string' ||
+            !body.trim()
+        ) {
+            return res.status(400).json({
+                error: 'invalid_notification',
+                message: 'Informe title e body.'
+            });
+        }
+
+        const targetUserIds =
+            [...new Set(
+                userIds
+                    .map(uid => String(uid || '').trim())
+                    .filter(Boolean)
+            )].slice(0, 100);
+
+        if (!targetUserIds.length) {
+            return res.status(200).json({
+                success: true,
+                requestedUsers: 0,
+                targetTokens: 0,
+                sent: 0,
+                failed: 0
+            });
+        }
+
+        const firebaseAdmin = getFirebaseAdmin();
+
+        if (!firebaseAdmin) {
+            return res.status(503).json({
+                error: 'firebase_admin_unavailable',
+                message:
+                    'Firebase Admin não foi inicializado no servidor.',
+                detail:
+                    firebaseAdminInitError?.message ||
+                    'Credencial ausente ou inválida.'
+            });
+        }
+
+        try {
+            const firestore =
+                firebaseAdmin.firestore();
+
+            const userDocs =
+                await Promise.all(
+                    targetUserIds.map(uid =>
+                        firestore
+                            .collection('users')
+                            .doc(uid)
+                            .get()
+                    )
+                );
+
+            const tokenToUserIds =
+                new Map();
+
+            for (let index = 0; index < userDocs.length; index++) {
+                const userDoc = userDocs[index];
+
+                if (!userDoc.exists) {
+                    continue;
+                }
+
+                const userData =
+                    userDoc.data() || {};
+
+                const tokens = [];
+
+                if (Array.isArray(userData.fcmTokens)) {
+                    tokens.push(...userData.fcmTokens);
+                }
+
+                if (typeof userData.fcmToken === 'string') {
+                    tokens.push(userData.fcmToken);
+                }
+
+                for (const token of tokens) {
+                    const cleanToken =
+                        String(token || '').trim();
+
+                    if (!cleanToken) {
+                        continue;
+                    }
+
+                    const uid =
+                        targetUserIds[index];
+
+                    const existing =
+                        tokenToUserIds.get(cleanToken) || [];
+
+                    existing.push(uid);
+                    tokenToUserIds.set(cleanToken, existing);
+                }
+            }
+
+            const tokens =
+                [...tokenToUserIds.keys()].slice(0, 500);
+
+            if (!tokens.length) {
+                return res.status(200).json({
+                    success: true,
+                    requestedUsers: targetUserIds.length,
+                    targetTokens: 0,
+                    sent: 0,
+                    failed: 0
+                });
+            }
+
+            const response =
+                await firebaseAdmin
+                    .messaging()
+                    .sendEachForMulticast({
+                        tokens,
+                        notification: {
+                            title: title.trim(),
+                            body: body.trim()
+                        },
+                        data:
+                            normalizeNotificationData(data)
+                    });
+
+            const invalidTokens = [];
+
+            response.responses.forEach((item, index) => {
+                const code =
+                    item.error?.code;
+
+                if (
+                    code === 'messaging/invalid-registration-token' ||
+                    code === 'messaging/registration-token-not-registered'
+                ) {
+                    invalidTokens.push(tokens[index]);
+                }
+            });
+
+            if (invalidTokens.length) {
+                const cleanupPromises = [];
+
+                for (const invalidToken of invalidTokens) {
+                    const owners =
+                        tokenToUserIds.get(invalidToken) || [];
+
+                    for (const uid of owners) {
+                        cleanupPromises.push(
+                            firestore
+                                .collection('users')
+                                .doc(uid)
+                                .set({
+                                    fcmTokens:
+                                        firebaseAdmin.firestore.FieldValue.arrayRemove(
+                                            invalidToken
+                                        )
+                                }, { merge: true })
+                        );
+                    }
+                }
+
+                await Promise.allSettled(cleanupPromises);
+            }
+
+            return res.status(200).json({
+                success: true,
+                requestedUsers: targetUserIds.length,
+                targetTokens: tokens.length,
+                sent: response.successCount,
+                failed: response.failureCount
+            });
+        } catch (error) {
+            console.error(
+                'Erro ao enviar notificações:',
+                error.message
+            );
+
+            return res.status(500).json({
+                error: 'notification_send_failed',
+                message:
+                    'Não foi possível enviar a notificação agora.'
+            });
+        }
+    }
+);
 
 // ============================================================
 // NORMALIZAÇÃO
