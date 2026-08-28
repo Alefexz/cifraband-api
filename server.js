@@ -416,6 +416,16 @@ function normalizeText(text) {
         .trim();
 }
 
+function buildGlobalCifraId(artist, track) {
+    return `${artist}_${track}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '');
+}
+
 // ============================================================
 // TOKENIZAÇÃO
 // ============================================================
@@ -765,6 +775,76 @@ function getSongCache(key) {
     }
 
     return item.data;
+}
+
+async function getGlobalSongCache(artist, track) {
+    const firebaseAdmin = getFirebaseAdmin();
+    if (!firebaseAdmin) return null;
+
+    try {
+        const docId = buildGlobalCifraId(artist, track);
+        const snapshot = await firebaseAdmin
+            .firestore()
+            .collection('global_cifras')
+            .doc(docId)
+            .get();
+
+        if (!snapshot.exists) return null;
+
+        const cached = snapshot.data() || {};
+        const response = {
+            title: cached.title || track,
+            artist: cached.artist || artist,
+            originalKey: cached.originalKey || 'C',
+            shapeKey: cached.shapeKey || '',
+            capo: cached.capo || '',
+            content: cached.content || '',
+            url: cached.url || '',
+            source: cached.source || 'global_cache',
+            searchScore: cached.searchScore || 100
+        };
+
+        saveSongCache(`${normalizeText(artist)}::${normalizeText(track)}`, response);
+        return response;
+    } catch (error) {
+        console.warn(
+            'Falha ao consultar cache global:',
+            error.message
+        );
+        return null;
+    }
+}
+
+async function saveGlobalSongCache(artist, track, data) {
+    const firebaseAdmin = getFirebaseAdmin();
+    if (!firebaseAdmin) return;
+
+    try {
+        const docId = buildGlobalCifraId(artist, track);
+        await firebaseAdmin
+            .firestore()
+            .collection('global_cifras')
+            .doc(docId)
+            .set({
+                id: docId,
+                title: data.title || track,
+                artist: data.artist || artist,
+                originalKey: data.originalKey || 'C',
+                shapeKey: data.shapeKey || '',
+                capo: data.capo || '',
+                content: data.content || '',
+                url: data.url || '',
+                source: data.source || '',
+                searchScore: data.searchScore || 0,
+                created_at: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
+                updated_at: firebaseAdmin.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+    } catch (error) {
+        console.warn(
+            'Falha ao salvar cache global:',
+            error.message
+        );
+    }
 }
 
 function saveCatalogCache(key, data) {
@@ -2051,6 +2131,22 @@ app.get(
                 .json(cached);
         }
 
+        const globalCached =
+            await getGlobalSongCache(
+                artist,
+                track
+            );
+
+        if (globalCached) {
+            console.log(
+                `⚡ CACHE GLOBAL: ${artist} - ${track}`
+            );
+
+            return res
+                .status(200)
+                .json(globalCached);
+        }
+
         // ====================================================
         // EVITAR BUSCAS DUPLICADAS
         // ====================================================
@@ -2135,6 +2231,12 @@ app.get(
 
                 saveSongCache(
                     cacheKey,
+                    response
+                );
+
+                await saveGlobalSongCache(
+                    artist,
+                    track,
                     response
                 );
 
