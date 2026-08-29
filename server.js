@@ -777,6 +777,167 @@ function getSongCache(key) {
     return item.data;
 }
 
+const NOTE_INDEX = {
+    C: 0,
+    'C#': 1,
+    Db: 1,
+    D: 2,
+    'D#': 3,
+    Eb: 3,
+    E: 4,
+    F: 5,
+    'F#': 6,
+    Gb: 6,
+    G: 7,
+    'G#': 8,
+    Ab: 8,
+    A: 9,
+    'A#': 10,
+    Bb: 10,
+    B: 11
+};
+
+const SHARP_SCALE = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLAT_SCALE = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+function normalizeKeyValue(value) {
+    const text = String(value || '')
+        .trim()
+        .replace(/♯/g, '#')
+        .replace(/♭/g, 'b')
+        .replace(/^tom\s*:\s*/i, '');
+
+    const match =
+        text.match(/(?:^|[^A-Za-z])([A-Ga-g])(#|b)?(m)?(?=$|[^A-Za-z])/);
+
+    if (!match) return '';
+
+    let note =
+        `${match[1].toUpperCase()}${match[2] || ''}`;
+
+    if (note === 'A#') note = 'Bb';
+    if (note === 'D#') note = 'Eb';
+    if (note === 'G#') note = 'Ab';
+
+    return `${note}${match[3] ? 'm' : ''}`;
+}
+
+function removeMinorKey(key) {
+    const normalized = normalizeKeyValue(key);
+    return normalized.endsWith('m')
+        ? normalized.slice(0, -1)
+        : normalized;
+}
+
+function isMinorKeyValue(key) {
+    return /^[A-G](?:#|b)?m$/.test(normalizeKeyValue(key));
+}
+
+function wrap12(value) {
+    const result = value % 12;
+    return result < 0 ? result + 12 : result;
+}
+
+function transposeKeyValue(key, semitones) {
+    const normalized = normalizeKeyValue(key);
+    if (!normalized) return '';
+
+    const root = removeMinorKey(normalized);
+    const index = NOTE_INDEX[root];
+    if (index === undefined) return normalized;
+
+    const preferFlats = root.includes('b') || normalized.includes('b');
+    const scale = preferFlats ? FLAT_SCALE : SHARP_SCALE;
+    const target = scale[wrap12(index + semitones)];
+
+    return isMinorKeyValue(normalized)
+        ? `${target}m`
+        : target;
+}
+
+function chordRootQuality(token) {
+    const value = String(token || '').trim();
+    const match = value.match(/^([A-G](?:#|b)?)(.*)$/);
+    if (!match) return '';
+
+    const rest = String(match[2] || '').toLowerCase();
+    const minor = rest.startsWith('m') && !rest.startsWith('maj');
+    return normalizeKeyValue(`${match[1]}${minor ? 'm' : ''}`);
+}
+
+function isLikelyChordLine(line) {
+    const tokens = String(line || '').trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return false;
+
+    let chords = 0;
+    for (const token of tokens) {
+        if (chordRootQuality(token)) chords++;
+    }
+
+    return chords > 0 && chords >= tokens.length / 2;
+}
+
+function countChordRoot(content, key) {
+    const target = normalizeKeyValue(key);
+    if (!target) return 0;
+
+    let count = 0;
+    for (const line of String(content || '').split('\n')) {
+        if (!isLikelyChordLine(line)) continue;
+
+        for (const token of line.trim().split(/\s+/)) {
+            if (chordRootQuality(token) === target) {
+                count++;
+            }
+        }
+    }
+
+    return count;
+}
+
+function minorRealKeyFromShape(originalKey, minorShape, capo) {
+    const inferred = transposeKeyValue(minorShape, capo);
+    const originalRoot = removeMinorKey(originalKey);
+
+    if (
+        NOTE_INDEX[originalRoot] !== undefined &&
+        NOTE_INDEX[originalRoot] === NOTE_INDEX[removeMinorKey(inferred)]
+    ) {
+        return `${originalRoot}m`;
+    }
+
+    return inferred;
+}
+
+function repairSongKeyInfo(data) {
+    const response = { ...data };
+    const capoMatch = String(response.capo || '').match(/\d+/);
+    const capoNumber = capoMatch ? Number(capoMatch[0]) : 0;
+
+    let originalKey = normalizeKeyValue(response.originalKey);
+    let shapeKey = normalizeKeyValue(response.shapeKey);
+
+    if (shapeKey && !isMinorKeyValue(shapeKey)) {
+        const minorShape = `${removeMinorKey(shapeKey)}m`;
+        const minorCount = countChordRoot(response.content, minorShape);
+        const majorCount = countChordRoot(response.content, shapeKey);
+
+        if (minorCount > majorCount) {
+            shapeKey = minorShape;
+        }
+    }
+
+    if (shapeKey && isMinorKeyValue(shapeKey) && !isMinorKeyValue(originalKey) && capoNumber > 0) {
+        originalKey = minorRealKeyFromShape(originalKey, shapeKey, capoNumber);
+    }
+
+    response.originalKey = originalKey || 'C';
+    response.shapeKey = shapeKey || '';
+    response.capo = capoMatch ? capoMatch[0] : String(response.capo || '');
+
+    return response;
+}
+
 async function getGlobalSongCache(artist, track) {
     const firebaseAdmin = getFirebaseAdmin();
     if (!firebaseAdmin) return null;
@@ -792,7 +953,7 @@ async function getGlobalSongCache(artist, track) {
         if (!snapshot.exists) return null;
 
         const cached = snapshot.data() || {};
-        const response = {
+        const response = repairSongKeyInfo({
             title: cached.title || track,
             artist: cached.artist || artist,
             originalKey: cached.originalKey || 'C',
@@ -802,7 +963,15 @@ async function getGlobalSongCache(artist, track) {
             url: cached.url || '',
             source: cached.source || 'global_cache',
             searchScore: cached.searchScore || 100
-        };
+        });
+
+        if (
+            response.originalKey !== (cached.originalKey || 'C') ||
+            response.shapeKey !== (cached.shapeKey || '') ||
+            response.capo !== (cached.capo || '')
+        ) {
+            saveGlobalSongCache(artist, track, response);
+        }
 
         saveSongCache(`${normalizeText(artist)}::${normalizeText(track)}`, response);
         return response;
@@ -821,21 +990,23 @@ async function saveGlobalSongCache(artist, track, data) {
 
     try {
         const docId = buildGlobalCifraId(artist, track);
+        const repaired = repairSongKeyInfo(data);
+
         await firebaseAdmin
             .firestore()
             .collection('global_cifras')
             .doc(docId)
             .set({
                 id: docId,
-                title: data.title || track,
-                artist: data.artist || artist,
-                originalKey: data.originalKey || 'C',
-                shapeKey: data.shapeKey || '',
-                capo: data.capo || '',
-                content: data.content || '',
-                url: data.url || '',
-                source: data.source || '',
-                searchScore: data.searchScore || 0,
+                title: repaired.title || track,
+                artist: repaired.artist || artist,
+                originalKey: repaired.originalKey || 'C',
+                shapeKey: repaired.shapeKey || '',
+                capo: repaired.capo || '',
+                content: repaired.content || '',
+                url: repaired.url || '',
+                source: repaired.source || '',
+                searchScore: repaired.searchScore || 0,
                 created_at: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
                 updated_at: firebaseAdmin.firestore.FieldValue.serverTimestamp()
             }, { merge: true });
@@ -2192,7 +2363,7 @@ app.get(
                         track
                     );
 
-                const response = {
+                const response = repairSongKeyInfo({
                     title:
                         result.title ||
                         track,
@@ -2227,7 +2398,7 @@ app.get(
                         Math.round(
                             result.score
                         )
-                };
+                });
 
                 saveSongCache(
                     cacheKey,
