@@ -1143,7 +1143,7 @@ function extractKeyInfo($, contentText) {
     // ========================================================
 
     const keyMatch = bodyText.match(
-        /tom:\s*([A-G](?:#|b)?)(?:\s*\(\s*forma\s+dos\s+acordes\s+no\s+tom\s+de\s*([A-G](?:#|b)?)\s*\))?/i
+        /tom:\s*([A-G](?:#|b)?m?)(?:\s*\(\s*(?:com\s+)?forma\s+(?:dos\s+acordes\s+)?(?:no\s+tom\s+de\s*|de\s*)?([A-G](?:#|b)?m?)\s*\))?/i
     );
 
     if (keyMatch) {
@@ -1156,7 +1156,7 @@ function extractKeyInfo($, contentText) {
     if (!originalKey) {
         const alternativeKey =
             bodyText.match(
-                /Tom:\s*([A-G](?:#|b)?)/i
+                /Tom:\s*([A-G](?:#|b)?m?)/i
             );
 
         if (alternativeKey) {
@@ -1172,7 +1172,7 @@ function extractKeyInfo($, contentText) {
     if (!shapeKey) {
         const shapeMatch =
             bodyText.match(
-                /forma(?:\s+dos\s+acordes)?\s+(?:no\s+tom\s+de|de)\s*([A-G](?:#|b)?)/i
+                /forma(?:\s+dos\s+acordes)?\s+(?:no\s+tom\s+de|de)\s*([A-G](?:#|b)?m?)/i
             );
 
         if (shapeMatch) {
@@ -1208,7 +1208,7 @@ function extractKeyInfo($, contentText) {
     if (!originalKey) {
         const firstChordMatch =
             contentText.match(
-                /\b([A-G](?:#|b)?)(?:m|maj|dim|aug|sus|add|M)?\d*(?:\/[A-G](?:#|b)?)?\b/
+                /\b([A-G](?:#|b)?m?)(?:maj|dim|aug|sus|add|M)?\d*(?:\/[A-G](?:#|b)?)?\b/
             );
 
         if (firstChordMatch) {
