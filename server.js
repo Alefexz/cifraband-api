@@ -10,6 +10,7 @@ const admin = require('firebase-admin');
 
 const app = express();
 
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
 
 // FIX: sem isso, qualquer chamada vinda de um app Flutter Web (ou de
@@ -18,7 +19,10 @@ app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+    res.header(
+        'Access-Control-Allow-Headers',
+        'Authorization,Content-Type,X-Firebase-AppCheck,X-Firebase-App-Check'
+    );
     if (req.method === 'OPTIONS') {
         return res.sendStatus(204);
     }
@@ -38,6 +42,12 @@ const REQUEST_TIMEOUT = 9000;
 const DIRECT_CONCURRENCY = 6;
 const CATALOG_CONCURRENCY = 5;
 const SEARCH_CONCURRENCY = 5;
+
+const NOTIFICATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const NOTIFICATION_RATE_LIMIT_MAX = 30;
+const SEARCH_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const SEARCH_RATE_LIMIT_MAX = 60;
+const rateLimitBuckets = new Map();
 
 // ============================================================
 // CACHE
@@ -180,6 +190,310 @@ async function authenticateFirebaseUser(req, res, next) {
     }
 }
 
+function clientIdentity(req) {
+    const uid = req.firebaseUser?.uid;
+    if (uid) return `uid:${uid}`;
+
+    const forwardedFor =
+        String(req.headers['x-forwarded-for'] || '')
+            .split(',')[0]
+            .trim();
+
+    return `ip:${forwardedFor || req.ip || 'unknown'}`;
+}
+
+function rateLimit({ name, windowMs, max }) {
+    return (req, res, next) => {
+        const now = Date.now();
+        const key = `${name}:${clientIdentity(req)}`;
+        const bucket =
+            rateLimitBuckets.get(key) || {
+                count: 0,
+                resetAt: now + windowMs
+            };
+
+        if (now > bucket.resetAt) {
+            bucket.count = 0;
+            bucket.resetAt = now + windowMs;
+        }
+
+        bucket.count += 1;
+        rateLimitBuckets.set(key, bucket);
+
+        res.setHeader('X-RateLimit-Limit', String(max));
+        res.setHeader(
+            'X-RateLimit-Remaining',
+            String(Math.max(0, max - bucket.count))
+        );
+        res.setHeader(
+            'X-RateLimit-Reset',
+            String(Math.ceil(bucket.resetAt / 1000))
+        );
+
+        if (bucket.count > max) {
+            return res.status(429).json({
+                error: 'rate_limit_exceeded',
+                message:
+                    'Muitas requisições em pouco tempo. Tente novamente em alguns minutos.'
+            });
+        }
+
+        return next();
+    };
+}
+
+async function verifyAppCheckIfRequired(req, res, next) {
+    if (String(process.env.REQUIRE_APP_CHECK || '').toLowerCase() !== 'true') {
+        return next();
+    }
+
+    const token =
+        req.headers['x-firebase-appcheck'] ||
+        req.headers['x-firebase-app-check'];
+
+    if (!token) {
+        return res.status(401).json({
+            error: 'missing_app_check',
+            message: 'Envie o token App Check no header X-Firebase-AppCheck.'
+        });
+    }
+
+    const firebaseAdmin = getFirebaseAdmin();
+    if (!firebaseAdmin) {
+        return res.status(503).json({
+            error: 'firebase_admin_unavailable',
+            message: 'Firebase Admin não foi inicializado no servidor.'
+        });
+    }
+
+    try {
+        req.appCheckToken =
+            await firebaseAdmin
+                .appCheck()
+                .verifyToken(String(token));
+
+        return next();
+    } catch (error) {
+        return res.status(401).json({
+            error: 'invalid_app_check',
+            message: 'Token App Check inválido ou expirado.'
+        });
+    }
+}
+
+async function assertNotificationTargetsInSameChurch(req, res, next) {
+    const firebaseAdmin = getFirebaseAdmin();
+    if (!firebaseAdmin) {
+        return res.status(503).json({
+            error: 'firebase_admin_unavailable',
+            message: 'Firebase Admin não foi inicializado no servidor.'
+        });
+    }
+
+    try {
+        const firestore = firebaseAdmin.firestore();
+        const senderUid = req.firebaseUser.uid;
+        const senderDoc =
+            await firestore.collection('users').doc(senderUid).get();
+        const senderChurchId =
+            String(senderDoc.data()?.church_id || '').trim();
+        const senderData =
+            senderDoc.data() || {};
+
+        if (!senderDoc.exists || !senderChurchId) {
+            return res.status(403).json({
+                error: 'sender_without_church',
+                message: 'Usuário remetente não pertence a um ministério.'
+            });
+        }
+
+        const requestedUserIds = Array.isArray(req.body?.userIds)
+            ? req.body.userIds
+            : [];
+        const targetUserIds =
+            [...new Set(
+                requestedUserIds
+                    .map(uid => String(uid || '').trim())
+                    .filter(Boolean)
+            )].slice(0, 100);
+
+        const targetDocs =
+            await Promise.all(
+                targetUserIds.map(uid =>
+                    firestore.collection('users').doc(uid).get()
+                )
+            );
+
+        const forbiddenTargets = [];
+        for (let index = 0; index < targetDocs.length; index++) {
+            const targetDoc = targetDocs[index];
+            const targetChurchId =
+                String(targetDoc.data()?.church_id || '').trim();
+
+            if (
+                !targetDoc.exists ||
+                targetChurchId !== senderChurchId
+            ) {
+                forbiddenTargets.push(targetUserIds[index]);
+            }
+        }
+
+        if (forbiddenTargets.length) {
+            return res.status(403).json({
+                error: 'forbidden_notification_targets',
+                message:
+                    'Push bloqueado: todos os destinatários precisam pertencer ao mesmo ministério do remetente.',
+                rejectedTargets: forbiddenTargets.length
+            });
+        }
+
+        req.notificationTargetUserIds = targetUserIds;
+        req.notificationSender = {
+            uid: senderUid,
+            churchId: senderChurchId,
+            isAdmin: senderData.is_admin === true
+        };
+        req.notificationTargets =
+            targetDocs.map((targetDoc, index) => ({
+                uid: targetUserIds[index],
+                exists: targetDoc.exists,
+                churchId: String(targetDoc.data()?.church_id || '').trim(),
+                isAdmin: targetDoc.data()?.is_admin === true
+            }));
+        return next();
+    } catch (error) {
+        return res.status(500).json({
+            error: 'notification_authorization_failed',
+            message: 'Falha ao validar destinatários da notificação.'
+        });
+    }
+}
+
+function notificationAction(req) {
+    const data =
+        normalizeNotificationData(req.body?.data);
+
+    return {
+        type: String(data.type || '').trim(),
+        scheduleId: String(data.scheduleId || '').trim()
+    };
+}
+
+async function getScheduleForNotification(req, scheduleId) {
+    if (!scheduleId) return null;
+
+    const firebaseAdmin = getFirebaseAdmin();
+    if (!firebaseAdmin) return null;
+
+    const doc =
+        await firebaseAdmin
+            .firestore()
+            .collection('schedules')
+            .doc(scheduleId)
+            .get();
+
+    if (!doc.exists) return null;
+
+    const data = doc.data() || {};
+    const churchId = String(data.church_id || '').trim();
+
+    if (churchId !== req.notificationSender?.churchId) {
+        return null;
+    }
+
+    return data;
+}
+
+function scheduleTeamUids(schedule) {
+    const result = new Set(
+        Array.isArray(schedule.team_uids)
+            ? schedule.team_uids.map(uid => String(uid || '').trim())
+            : []
+    );
+
+    if (Array.isArray(schedule.team_assignments)) {
+        for (const item of schedule.team_assignments) {
+            const uid = String(item?.uid || '').trim();
+            if (uid) result.add(uid);
+        }
+    }
+
+    return result;
+}
+
+function senderIsOnSchedule(req, schedule) {
+    return scheduleTeamUids(schedule).has(req.notificationSender?.uid);
+}
+
+function allTargetsAreAdmins(req) {
+    return (req.notificationTargets || []).every(target => target.isAdmin);
+}
+
+function allTargetsAreScheduleTeamOrAdmins(req, schedule) {
+    const teamUids = scheduleTeamUids(schedule);
+
+    return (req.notificationTargets || []).every(
+        target => target.isAdmin || teamUids.has(target.uid)
+    );
+}
+
+async function authorizeNotificationAction(req, res, next) {
+    const sender = req.notificationSender;
+
+    if (!sender) {
+        return res.status(403).json({
+            error: 'notification_sender_not_checked',
+            message: 'Remetente da notificação não foi validado.'
+        });
+    }
+
+    if (sender.isAdmin) {
+        return next();
+    }
+
+    const action = notificationAction(req);
+
+    if (action.type === 'new_member') {
+        if (allTargetsAreAdmins(req)) return next();
+    }
+
+    if (
+        action.type === 'assignment_response' ||
+        action.type === 'song_suggestion'
+    ) {
+        const schedule =
+            await getScheduleForNotification(req, action.scheduleId);
+
+        if (!schedule || !senderIsOnSchedule(req, schedule)) {
+            return res.status(403).json({
+                error: 'forbidden_notification_action',
+                message:
+                    'Push bloqueado: esta ação precisa estar ligada a uma escala onde o remetente participa.'
+            });
+        }
+
+        if (
+            action.type === 'assignment_response' &&
+            allTargetsAreAdmins(req)
+        ) {
+            return next();
+        }
+
+        if (
+            action.type === 'song_suggestion' &&
+            allTargetsAreScheduleTeamOrAdmins(req, schedule)
+        ) {
+            return next();
+        }
+    }
+
+    return res.status(403).json({
+        error: 'forbidden_notification_action',
+        message:
+            'Push bloqueado: usuário comum só pode avisar ações permitidas da própria escala.'
+    });
+}
+
 function normalizeNotificationData(data) {
     const result = {};
 
@@ -201,6 +515,14 @@ function normalizeNotificationData(data) {
 app.post(
     '/notificar',
     authenticateFirebaseUser,
+    verifyAppCheckIfRequired,
+    rateLimit({
+        name: 'notification',
+        windowMs: NOTIFICATION_RATE_LIMIT_WINDOW_MS,
+        max: NOTIFICATION_RATE_LIMIT_MAX
+    }),
+    assertNotificationTargetsInSameChurch,
+    authorizeNotificationAction,
     async (req, res) => {
         const {
             userIds,
@@ -229,11 +551,7 @@ app.post(
         }
 
         const targetUserIds =
-            [...new Set(
-                userIds
-                    .map(uid => String(uid || '').trim())
-                    .filter(Boolean)
-            )].slice(0, 100);
+            req.notificationTargetUserIds || [];
 
         if (!targetUserIds.length) {
             return res.status(200).json({
@@ -2257,6 +2575,13 @@ function stripDuplicatedArtistPrefix(artist, track) {
 
 app.get(
     '/searchSong',
+    authenticateFirebaseUser,
+    verifyAppCheckIfRequired,
+    rateLimit({
+        name: 'searchSong',
+        windowMs: SEARCH_RATE_LIMIT_WINDOW_MS,
+        max: SEARCH_RATE_LIMIT_MAX
+    }),
     async (req, res) => {
         const artist =
             String(
