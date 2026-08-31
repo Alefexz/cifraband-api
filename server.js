@@ -3736,6 +3736,22 @@ async function findSong(
         return best;
     }
 
+    if (compositeTrackParts(track).length > 1) {
+        console.log(
+            '🧩 Medley/composição não encontrada como cifra completa; pulando busca web ampla para evitar resultado parcial.'
+        );
+
+        throw Object.assign(
+            new Error(
+                'Cifra completa do medley não encontrada nas fontes disponíveis.'
+            ),
+            {
+                code: 'SONG_NOT_FOUND',
+                statusCode: 404
+            }
+        );
+    }
+
     // ========================================================
     // 5. BUSCA WEB COMO ÚLTIMO RECURSO NO CIFRA CLUB
     // ========================================================
