@@ -1603,6 +1603,60 @@ function isValidCifraClubUrl(url) {
     }
 }
 
+const BAD_LINK_TITLES = new Set([
+    '',
+    'opcoes',
+    'opcao',
+    'mais',
+    'cifra',
+    'letra',
+    'principal',
+    'simplificada'
+]);
+
+function titleFromCifraClubUrl(url) {
+    try {
+        const parsed =
+            new URL(url);
+
+        const parts =
+            parsed.pathname
+                .split('/')
+                .filter(Boolean);
+
+        if (parts.length < 2) {
+            return '';
+        }
+
+        return parts[1]
+            .replace(/-/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    } catch (error) {
+        return '';
+    }
+}
+
+function cleanLinkTitle(rawTitle, url) {
+    const title =
+        String(rawTitle || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    const normalized =
+        normalizeText(title);
+
+    if (
+        !title ||
+        title.length < 3 ||
+        BAD_LINK_TITLES.has(normalized)
+    ) {
+        return titleFromCifraClubUrl(url);
+    }
+
+    return title;
+}
+
 // ============================================================
 // TEXTO DA CIFRA
 // ============================================================
@@ -2236,7 +2290,11 @@ async function fetchArtistCatalog(
 
                         links.push({
                             url: absolute,
-                            title: text
+                            title:
+                                cleanLinkTitle(
+                                    text,
+                                    absolute
+                                )
                         });
                     }
                 } catch (error) {}
@@ -2451,7 +2509,11 @@ async function searchCifraClub(
 
                         links.push({
                             url: absolute,
-                            title
+                            title:
+                                cleanLinkTitle(
+                                    title,
+                                    absolute
+                                )
                         });
                     } catch (error) {}
                 }
@@ -2612,7 +2674,11 @@ async function searchWebForCifraClub(
                     links.push({
                         url:
                             absolute,
-                        title
+                        title:
+                            cleanLinkTitle(
+                                title,
+                                absolute
+                            )
                     });
                 }
             );
