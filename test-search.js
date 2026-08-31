@@ -20,13 +20,16 @@ const TEST_CASES = [
   { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida', track: 'Vitorioso És (Ao Vivo)' },
   { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida & Nivea Soares', track: 'A Bênção' },
 
+  // ── Negativo confirmado: existe letra, mas não cifra confiável nas fontes fortes ──
+  { category: 'Negativo confirmado — letra sem cifra', artist: 'Isadora Pompeo', track: 'Ovelha Em Treinamento', expectFail: true },
+
   // ── Fallback multi-provedor: existem em outros sites ou slugs alternativos ──
-  { category: 'Fallback multi-provedor', artist: 'Isadora Pompeo', track: 'Ovelha Em Treinamento' },
   { category: 'Fallback multi-provedor', artist: 'Kemuel', track: 'Algo Novo (feat. Lukas Agustinho)' },
   { category: 'Fallback multi-provedor', artist: 'Kemuel', track: 'Aba' },
   { category: 'Fallback multi-provedor', artist: 'Kellen Byanca', track: 'Por Causa Dele' },
   { category: 'Fallback multi-provedor', artist: 'Gabriela Rocha', track: 'Diz' },
   { category: 'Fallback multi-provedor', artist: 'Isadora Pompeo', track: 'Tetelestai (Ao Vivo) (feat. Carol Tauber)' },
+  { category: 'Fallback multi-provedor', artist: 'Fernandinho', track: 'Ainda Que a Figueira' },
 
   // ── Regressão: casos que já sabemos que funcionavam ──
   { category: 'Regressão', artist: 'Morada', track: 'É Tudo Sobre Você (Ao Vivo)' },
@@ -55,8 +58,8 @@ const TEST_CASES = [
   { category: 'Colaboração / múltiplos artistas', artist: 'fhop music & Marco Telles', track: 'Colossenses e Suas Linhas de Amor' },
   { category: 'Colaboração / múltiplos artistas', artist: 'fhop music, Débora Rabelo & Hamilton Rabelo', track: 'Tu és + Águas Purificadoras (Ao Vivo)' },
 
-  // ── Acentos — NÃO verificado ao vivo contra o Cifra Club, pode não existir exatamente assim ──
-  { category: 'Acentos (não verificado)', artist: 'Isaías Saad', track: 'Ainda Que a Figueira' },
+  // ── Artista divergente/cover: Deezer pode mandar um artista, mas a cifra estar em outro ──
+  { category: 'Artista divergente / cover', artist: 'Isaías Saad', track: 'Ainda Que a Figueira' },
 
   // ── Nome de artista ambíguo/abreviado — NÃO verificado ao vivo ──
   { category: 'Nome ambíguo (não verificado)', artist: 'Aline', track: 'Dança do Pinguim' },
