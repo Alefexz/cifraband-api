@@ -767,8 +767,10 @@ const STOPWORDS = new Set([
     'e', 'em', 'um', 'uma', 'uns', 'umas',
     'no', 'na', 'nos', 'nas', 'para', 'por', 'com', 'se',
     'que', 'ao', 'aos', 'a', 'as',
-    'tu', 'eu', 'teu', 'tua', 'meu', 'minha', 'seu', 'sua',
-    'nosso', 'nossa', 'es', 'sou', 'sao', 'foi', 'esta'
+    // Em título de música, pronomes como "Teu", "Meu" e "Eu"
+    // distinguem obras diferentes ("Tudo é Teu" não é
+    // "Bem Mais Que Tudo"). Por isso eles ficam fora das stopwords.
+    'es', 'sou', 'sao', 'foi', 'esta'
 ]);
 
 function significantTokens(text) {
@@ -819,11 +821,59 @@ function hasSafeTitleMatch(requestedTrack, foundTitle) {
             token => requestedTokens.includes(token)
         );
 
-    if (allRequestedFound || allFoundRequested) {
+    if (allRequestedFound) {
         return true;
     }
 
+    if (allFoundRequested) {
+        // Aceitar o título encontrado como subconjunto só é seguro
+        // quando ele cobre quase todo o pedido. Isso evita aceitar
+        // "Ruja o Leão" como se fosse "Ruja o Leão / Talita Cumi".
+        return foundTokens.length >= Math.ceil(requestedTokens.length * 0.75);
+    }
+
     return similarity(requested, found) >= 0.62;
+}
+
+function compositeTrackParts(track) {
+    return String(track || '')
+        .replace(/\(.*?\)/g, '')
+        .replace(/\[.*?\]/g, '')
+        .split(/\s*(?:\/|\+)\s*/)
+        .map(part => part.trim())
+        .filter(Boolean);
+}
+
+function hasCompositeTrackCoverage(requestedTrack, foundTitle, content = '') {
+    const parts = compositeTrackParts(requestedTrack);
+
+    if (parts.length < 2) {
+        return true;
+    }
+
+    const titleText = normalizeText(foundTitle);
+    const contentText = normalizeText(content);
+
+    return parts.every(part => {
+        const partTokens = significantTokens(part)
+            .filter(token => token.length >= 4);
+
+        if (!partTokens.length) {
+            return true;
+        }
+
+        const coveredByTitle =
+            partTokens.every(token =>
+                titleText.includes(token)
+            );
+
+        const coveredByContent =
+            partTokens.every(token =>
+                contentText.includes(token)
+            );
+
+        return coveredByTitle || coveredByContent;
+    });
 }
 
 // FIX: parênteses/colchetes atrapalham a pontuação tanto quanto
@@ -1318,6 +1368,30 @@ function getSongCache(key) {
     return item.data;
 }
 
+function isSearchResultSafeForRequest(artist, track, result) {
+    if (!result) {
+        return false;
+    }
+
+    if (!hasSafeTitleMatch(track, result.title || '')) {
+        return false;
+    }
+
+    if (!hasCompositeTrackCoverage(
+        track,
+        result.title || '',
+        result.content || ''
+    )) {
+        return false;
+    }
+
+    if (!looksLikeChordContent(result.content || '')) {
+        return false;
+    }
+
+    return true;
+}
+
 const NOTE_INDEX = {
     C: 0,
     'C#': 1,
@@ -1506,6 +1580,21 @@ async function getGlobalSongCache(artist, track) {
             searchScore: cached.searchScore || 100
         });
 
+        if (!isSearchResultSafeForRequest(artist, track, response)) {
+            console.warn(
+                `Cache global ignorado por baixa correspondência: ${artist} - ${track} -> ${response.title}`
+            );
+
+            await snapshot.ref.delete().catch(error => {
+                console.warn(
+                    'Falha ao remover cache global inválido:',
+                    error.message
+                );
+            });
+
+            return null;
+        }
+
         if (
             response.originalKey !== (cached.originalKey || 'C') ||
             response.shapeKey !== (cached.shapeKey || '') ||
@@ -1532,6 +1621,14 @@ async function saveGlobalSongCache(artist, track, data) {
     try {
         const docId = buildGlobalCifraId(artist, track);
         const repaired = repairSongKeyInfo(data);
+
+        if (!isSearchResultSafeForRequest(artist, track, repaired)) {
+            console.warn(
+                `Cache global não salvo por baixa correspondência: ${artist} - ${track} -> ${repaired.title}`
+            );
+
+            return;
+        }
 
         await firebaseAdmin
             .firestore()
@@ -2417,6 +2514,11 @@ async function inspectSongUrl(
         !hasSafeTitleMatch(
             requestedTrack,
             pageTitle
+        ) ||
+        !hasCompositeTrackCoverage(
+            requestedTrack,
+            pageTitle,
+            content
         )
     ) {
         return null;
@@ -3155,6 +3257,11 @@ async function inspectAlternativeProviderUrl(
         !hasSafeTitleMatch(
             requestedTrack,
             pageTitle
+        ) ||
+        !hasCompositeTrackCoverage(
+            requestedTrack,
+            pageTitle,
+            content
         )
     ) {
         return null;

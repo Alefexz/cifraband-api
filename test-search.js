@@ -30,6 +30,10 @@ const TEST_CASES = [
   { category: 'Fallback multi-provedor', artist: 'Gabriela Rocha', track: 'Diz' },
   { category: 'Fallback multi-provedor', artist: 'Isadora Pompeo', track: 'Tetelestai (Ao Vivo) (feat. Carol Tauber)' },
   { category: 'Fallback multi-provedor', artist: 'Fernandinho', track: 'Ainda Que a Figueira' },
+  { category: 'Fallback multi-provedor', artist: 'Aline Barros', track: 'Tudo é Teu' },
+
+  // ── Negativo confirmado: não aceitar só a primeira parte de um medley ──
+  { category: 'Negativo confirmado — medley parcial', artist: 'FHOP', track: 'Ruja o Leão / Talita Cumi', expectFail: true },
 
   // ── Regressão: casos que já sabemos que funcionavam ──
   { category: 'Regressão', artist: 'Morada', track: 'É Tudo Sobre Você (Ao Vivo)' },
