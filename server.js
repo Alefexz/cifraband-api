@@ -804,6 +804,11 @@ function formatArtistSlug(text) {
 
         'aline barros': 'aline-barros',
 
+        // O catálogo de onde o app puxa resultados às vezes vem com o
+        // nome civil completo, mas o Cifra Club usa o nome artístico.
+        'gabriel guedes': 'gabriel-guedes',
+        'gabriel guedes de almeida': 'gabriel-guedes',
+
         // Confirmado ao vivo contra o site: o slug real é só "nadson",
         // sem "o ferinha" — decisão editorial do Cifra Club, impossível
         // de deduzir por regra.
@@ -873,6 +878,31 @@ function generateArtistSlugs(artist) {
     if (normalized === 'aline barros') {
         add('aline');
         add('aline-barros');
+    }
+
+    if (
+        normalized === 'gabriel guedes' ||
+        normalized === 'gabriel guedes de almeida'
+    ) {
+        add('gabriel-guedes');
+    }
+
+    // Heurística conservadora para nomes civis/artísticos: se o artista
+    // vier como "Nome Sobrenome de X", tentar também só "Nome Sobrenome".
+    // A validação por score continua impedindo falso positivo grosseiro.
+    const withoutCivilSuffix = normalized
+        .replace(/\s+de\s+[a-z0-9]+$/i, '')
+        .replace(/\s+da\s+[a-z0-9]+$/i, '')
+        .replace(/\s+do\s+[a-z0-9]+$/i, '')
+        .trim();
+
+    if (
+        withoutCivilSuffix &&
+        withoutCivilSuffix !== normalized &&
+        withoutCivilSuffix.split(' ').length >= 2
+    ) {
+        add(formatArtistSlug(withoutCivilSuffix));
+        add(withoutCivilSuffix);
     }
 
     return result;
