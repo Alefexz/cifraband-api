@@ -1714,6 +1714,268 @@ function cleanLinkTitle(rawTitle, url) {
 }
 
 // ============================================================
+// PROVEDORES ALTERNATIVOS DE CIFRA
+// ============================================================
+
+const ALTERNATIVE_CIFRA_PROVIDERS = [
+    {
+        source: 'cifras_com_br',
+        label: 'Cifras',
+        baseUrl: 'https://www.cifras.com.br',
+        hostnames: new Set([
+            'www.cifras.com.br',
+            'cifras.com.br'
+        ]),
+        pathPrefix: '/cifra/',
+        searchDomain: 'cifras.com.br/cifra'
+    },
+    {
+        source: 'cifras_gospel_online',
+        label: 'Cifras Gospel Online',
+        baseUrl: 'https://cifrasgospel.online',
+        hostnames: new Set([
+            'cifrasgospel.online',
+            'www.cifrasgospel.online'
+        ]),
+        pathPrefix: '/cifra/',
+        searchDomain: 'cifrasgospel.online/cifra'
+    }
+];
+
+function buildAlternativeProviderUrl(
+    provider,
+    artistSlug,
+    trackSlug
+) {
+    return `${provider.baseUrl}${provider.pathPrefix}${artistSlug}/${trackSlug}/`;
+}
+
+function isValidAlternativeProviderUrl(
+    provider,
+    url
+) {
+    try {
+        const parsed =
+            new URL(url);
+
+        if (
+            !provider.hostnames.has(
+                parsed.hostname
+            )
+        ) {
+            return false;
+        }
+
+        const path =
+            parsed.pathname.toLowerCase();
+
+        if (
+            !path.startsWith(
+                provider.pathPrefix
+            )
+        ) {
+            return false;
+        }
+
+        const blocked = [
+            '/letra/',
+            '/videos/',
+            '/video/',
+            '/artistas/',
+            '/playlist/',
+            '/blog/',
+            '/buscar',
+            '/search'
+        ];
+
+        if (
+            blocked.some(item =>
+                path.includes(item)
+            )
+        ) {
+            return false;
+        }
+
+        const parts =
+            path
+                .split('/')
+                .filter(Boolean);
+
+        // /cifra/artista/musica
+        return parts.length >= 3;
+    } catch (error) {
+        return false;
+    }
+}
+
+function alternativeProviderForUrl(url) {
+    return ALTERNATIVE_CIFRA_PROVIDERS.find(provider =>
+        isValidAlternativeProviderUrl(
+            provider,
+            url
+        )
+    );
+}
+
+function titleFromAlternativeProviderUrl(url) {
+    try {
+        const parsed =
+            new URL(url);
+
+        const parts =
+            parsed.pathname
+                .split('/')
+                .filter(Boolean);
+
+        if (parts.length < 3) {
+            return '';
+        }
+
+        return parts
+            .slice(2)
+            .join(' ')
+            .replace(/-/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    } catch (error) {
+        return '';
+    }
+}
+
+function cleanAlternativeLinkTitle(rawTitle, url) {
+    const title =
+        String(rawTitle || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    const normalized =
+        normalizeText(title);
+
+    if (
+        !title ||
+        title.length < 3 ||
+        BAD_LINK_TITLES.has(normalized) ||
+        normalized.includes('opcoes') ||
+        normalized.includes('anuncio')
+    ) {
+        return titleFromAlternativeProviderUrl(url);
+    }
+
+    return title;
+}
+
+function extractAlternativeProviderContent($, provider) {
+    if (provider.source === 'cifras_gospel_online') {
+        const parts = [];
+
+        $('pre.wp-block-verse, article pre, main pre, pre').each(
+            (index, element) => {
+                const text =
+                    $(element)
+                        .text()
+                        .replace(/\u00a0/g, ' ')
+                        .trim();
+
+                const normalized =
+                    normalizeText(text);
+
+                if (
+                    !text ||
+                    text.length < 3 ||
+                    BAD_LINK_TITLES.has(normalized) ||
+                    normalized === 'btn'
+                ) {
+                    return;
+                }
+
+                parts.push(text);
+            }
+        );
+
+        const combined =
+            parts
+                .join('\n')
+                .trim();
+
+        if (combined) {
+            return combined;
+        }
+    }
+
+    return extractChordContent($);
+}
+
+function extractAlternativeProviderMetadata(
+    $,
+    provider,
+    url,
+    requestedArtist
+) {
+    let title =
+        $('h1').first().text().trim();
+
+    let artist = '';
+
+    const pageTitle =
+        $('title').first().text().trim();
+
+    const patterns = [
+        /^(.+?)\s+-\s+(.+?)\s+\|\s*CIFRAS/i,
+        /^(.+?)\s+-\s+(.+?)\s+-\s+Cifra/i,
+        /^(.+?)\s+cifra\s+(.+?)$/i
+    ];
+
+    for (const pattern of patterns) {
+        const match =
+            pageTitle.match(pattern);
+
+        if (match) {
+            title =
+                title || match[1].trim();
+
+            artist =
+                match[2].trim();
+            break;
+        }
+    }
+
+    if (!title) {
+        const ogTitle =
+            $('meta[property="og:title"]')
+                .attr('content') ||
+            $('meta[name="twitter:title"]')
+                .attr('content') ||
+            '';
+
+        title =
+            String(ogTitle)
+                .replace(/\s*-\s*Cifra.*$/i, '')
+                .trim();
+    }
+
+    if (!title) {
+        title =
+            titleFromAlternativeProviderUrl(url);
+    }
+
+    if (
+        !artist ||
+        BAD_ARTIST_VALUES.has(
+            normalizeText(artist)
+        )
+    ) {
+        artist = requestedArtist;
+    }
+
+    return {
+        title,
+        artist,
+        provider:
+            provider.label
+    };
+}
+
+// ============================================================
 // TEXTO DA CIFRA
 // ============================================================
 
@@ -2816,6 +3078,343 @@ async function searchWebForCifraClub(
 }
 
 // ============================================================
+// BUSCA EM PROVEDORES ALTERNATIVOS
+// ============================================================
+
+async function inspectAlternativeProviderUrl(
+    url,
+    provider,
+    requestedArtist,
+    requestedTrack
+) {
+    if (
+        !isValidAlternativeProviderUrl(
+            provider,
+            url
+        )
+    ) {
+        return null;
+    }
+
+    const page =
+        await fetchHtml(url);
+
+    if (!page) {
+        return null;
+    }
+
+    const $ =
+        cheerio.load(page.html);
+
+    const content =
+        extractAlternativeProviderContent(
+            $,
+            provider
+        );
+
+    if (!looksLikeChordContent(content)) {
+        return null;
+    }
+
+    const metadata =
+        extractAlternativeProviderMetadata(
+            $,
+            provider,
+            page.finalUrl || url,
+            requestedArtist
+        );
+
+    const pageTitle =
+        metadata.title || requestedTrack;
+
+    const pageArtist =
+        metadata.artist || requestedArtist;
+
+    const score =
+        scoreSong(
+            requestedArtist,
+            requestedTrack,
+            pageArtist,
+            pageTitle
+        );
+
+    if (
+        score < 50 ||
+        !hasSafeTitleMatch(
+            requestedTrack,
+            pageTitle
+        )
+    ) {
+        return null;
+    }
+
+    const keyInfo =
+        extractKeyInfo(
+            $,
+            content
+        );
+
+    return {
+        title:
+            pageTitle,
+
+        artist:
+            pageArtist,
+
+        originalKey:
+            keyInfo.originalKey,
+
+        shapeKey:
+            keyInfo.shapeKey,
+
+        capo:
+            keyInfo.capo,
+
+        content:
+            cleanSongContent(content),
+
+        url:
+            page.finalUrl || url,
+
+        source:
+            provider.source,
+
+        score
+    };
+}
+
+async function searchAlternativeProvidersDirect(
+    artist,
+    track
+) {
+    const candidates = [];
+
+    for (const provider of ALTERNATIVE_CIFRA_PROVIDERS) {
+        const artistSlugs =
+            generateArtistSlugs(artist);
+
+        const trackSlugs =
+            generateTrackSlugs(track);
+
+        for (const artistSlug of artistSlugs) {
+            for (const trackSlug of trackSlugs) {
+                candidates.push({
+                    provider,
+                    url:
+                        buildAlternativeProviderUrl(
+                            provider,
+                            artistSlug,
+                            trackSlug
+                        )
+                });
+            }
+        }
+    }
+
+    const unique =
+        new Map();
+
+    for (const item of candidates) {
+        const key =
+            `${item.provider.source}:${item.url}`;
+
+        if (!unique.has(key)) {
+            unique.set(key, item);
+        }
+    }
+
+    const items =
+        [...unique.values()];
+
+    console.log(
+        `🧭 Provedores alternativos diretos: ${items.length} candidatos`
+    );
+
+    const results =
+        await runConcurrent(
+            items,
+            DIRECT_CONCURRENCY,
+            async item => {
+                const result =
+                    await inspectAlternativeProviderUrl(
+                        item.url,
+                        item.provider,
+                        artist,
+                        track
+                    );
+
+                if (result) {
+                    console.log(
+                        `✅ Alternativo válido (${item.provider.label}): ${result.url}`
+                    );
+                }
+
+                return result;
+            }
+        );
+
+    return results.sort(
+        (a, b) =>
+            b.score - a.score
+    );
+}
+
+async function searchWebForAlternativeProviders(
+    artist,
+    track
+) {
+    const queries = [];
+
+    for (const provider of ALTERNATIVE_CIFRA_PROVIDERS) {
+        for (const trackVariant of generateTrackTitleVariants(track)) {
+            addUniqueText(
+                queries,
+                `site:${provider.searchDomain} ${trackVariant}`
+            );
+
+            for (const artistVariant of generateArtistNameVariants(artist)) {
+                addUniqueText(
+                    queries,
+                    `site:${provider.searchDomain} ${trackVariant} ${artistVariant}`
+                );
+            }
+        }
+    }
+
+    const links = [];
+
+    for (const query of queries.slice(0, 16)) {
+        try {
+            const response =
+                await axios.get(
+                    'https://duckduckgo.com/html/',
+                    {
+                        timeout:
+                            REQUEST_TIMEOUT,
+                        headers: HEADERS,
+                        params: {
+                            q: query
+                        }
+                    }
+                );
+
+            const $ =
+                cheerio.load(response.data);
+
+            $('a[href]').each(
+                (index, element) => {
+                    const href =
+                        $(element).attr('href');
+
+                    const absolute =
+                        extractSearchResultUrl(href);
+
+                    const provider =
+                        alternativeProviderForUrl(
+                            absolute
+                        );
+
+                    if (!provider) {
+                        return;
+                    }
+
+                    const title =
+                        $(element)
+                            .text()
+                            .replace(/\s+/g, ' ')
+                            .trim();
+
+                    links.push({
+                        provider,
+                        url:
+                            absolute,
+                        title:
+                            cleanAlternativeLinkTitle(
+                                title,
+                                absolute
+                            )
+                    });
+                }
+            );
+        } catch (error) {
+            console.log(
+                `⚠️ Busca web alternativa falhou: ${query} (${error.message})`
+            );
+        }
+    }
+
+    const unique =
+        new Map();
+
+    for (const item of links) {
+        const cleanUrl =
+            item.url
+                .split('?')[0]
+                .replace(/\/+$/, '') + '/';
+
+        const score =
+            scoreSong(
+                artist,
+                track,
+                '',
+                item.title
+            );
+
+        const key =
+            `${item.provider.source}:${cleanUrl}`;
+
+        if (
+            !unique.has(key) ||
+            unique.get(key).score < score
+        ) {
+            unique.set(
+                key,
+                {
+                    provider:
+                        item.provider,
+                    url:
+                        cleanUrl,
+                    title:
+                        item.title,
+                    score
+                }
+            );
+        }
+    }
+
+    const ranked =
+        [...unique.values()]
+            .sort(
+                (a, b) =>
+                    b.score - a.score
+            )
+            .slice(0, 16);
+
+    console.log(
+        `🛟 Busca web alternativa: ${ranked.length} candidatos`
+    );
+
+    const results =
+        await runConcurrent(
+            ranked,
+            WEB_SEARCH_CONCURRENCY,
+            async item => {
+                return await inspectAlternativeProviderUrl(
+                    item.url,
+                    item.provider,
+                    artist,
+                    track
+                );
+            }
+        );
+
+    return results.sort(
+        (a, b) =>
+            b.score - a.score
+    );
+}
+
+// ============================================================
 // ESCOLHER MELHOR RESULTADO
 // ============================================================
 
@@ -3002,12 +3601,78 @@ async function findSong(
     }
 
     // ========================================================
-    // 5. ÚLTIMA TENTATIVA
+    // 5. PROVEDORES ALTERNATIVOS POR URL DIRETA
     // ========================================================
 
     console.log('');
     console.log(
-        `5️⃣ ÚLTIMA TENTATIVA COM TODOS OS RESULTADOS (${allResults.length} ao todo)...`
+        '5️⃣ TESTANDO PROVEDORES ALTERNATIVOS...'
+    );
+
+    results =
+        await searchAlternativeProvidersDirect(
+            artist,
+            track
+        );
+
+    allResults.push(...results);
+
+    best =
+        chooseBestResult(
+            results
+        );
+
+    if (
+        best &&
+        best.score >= 90
+    ) {
+        console.log(
+            `🏆 Encontrada em provedor alternativo direto`
+        );
+
+        return best;
+    }
+
+    // ========================================================
+    // 6. BUSCA WEB EM PROVEDORES ALTERNATIVOS
+    // ========================================================
+
+    console.log('');
+    console.log(
+        '6️⃣ BUSCA WEB EM PROVEDORES ALTERNATIVOS...'
+    );
+
+    results =
+        await searchWebForAlternativeProviders(
+            artist,
+            track
+        );
+
+    allResults.push(...results);
+
+    best =
+        chooseBestResult(
+            results
+        );
+
+    if (
+        best &&
+        best.score >= 75
+    ) {
+        console.log(
+            `🏆 Encontrada pela busca web alternativa`
+        );
+
+        return best;
+    }
+
+    // ========================================================
+    // 7. ÚLTIMA TENTATIVA
+    // ========================================================
+
+    console.log('');
+    console.log(
+        `7️⃣ ÚLTIMA TENTATIVA COM TODOS OS RESULTADOS (${allResults.length} ao todo)...`
     );
 
     best =

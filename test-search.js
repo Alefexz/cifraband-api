@@ -20,6 +20,14 @@ const TEST_CASES = [
   { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida', track: 'Vitorioso És (Ao Vivo)' },
   { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida & Nivea Soares', track: 'A Bênção' },
 
+  // ── Fallback multi-provedor: existem em outros sites ou slugs alternativos ──
+  { category: 'Fallback multi-provedor', artist: 'Isadora Pompeo', track: 'Ovelha Em Treinamento' },
+  { category: 'Fallback multi-provedor', artist: 'Kemuel', track: 'Algo Novo (feat. Lukas Agustinho)' },
+  { category: 'Fallback multi-provedor', artist: 'Kemuel', track: 'Aba' },
+  { category: 'Fallback multi-provedor', artist: 'Kellen Byanca', track: 'Por Causa Dele' },
+  { category: 'Fallback multi-provedor', artist: 'Gabriela Rocha', track: 'Diz' },
+  { category: 'Fallback multi-provedor', artist: 'Isadora Pompeo', track: 'Tetelestai (Ao Vivo) (feat. Carol Tauber)' },
+
   // ── Regressão: casos que já sabemos que funcionavam ──
   { category: 'Regressão', artist: 'Morada', track: 'É Tudo Sobre Você (Ao Vivo)' },
   { category: 'Regressão', artist: 'Morada', track: 'Quero Agradecer (Ao Vivo)' },
@@ -118,7 +126,7 @@ async function runOne(testCase, headers) {
       ...testCase,
       ok: true,
       elapsed,
-      detail: `"${data.title}" — ${data.artist} — tom ${data.originalKey || '?'} — score ${data.searchScore}`
+      detail: `"${data.title}" — ${data.artist} — tom ${data.originalKey || '?'} — fonte ${data.source || '?'} — score ${data.searchScore}`
     };
   } catch (error) {
     const elapsed = Date.now() - start;

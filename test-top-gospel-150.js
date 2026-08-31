@@ -238,7 +238,8 @@ async function testSong(item, token, index) {
       shapeKey: data.shapeKey,
       capo: data.capo,
       score: data.searchScore,
-      url: data.url
+      url: data.url,
+      source: data.source
     }
   };
 }
@@ -261,7 +262,7 @@ async function runPool(items, tokens) {
         const icon = result.ok ? (result.titleOk ? 'OK' : 'SUSPEITO') : 'FAIL';
         const time = `${(result.elapsedMs / 1000).toFixed(1)}s`;
         const found = result.ok
-          ? `=> ${result.found.title} - ${result.found.artist} | tom ${result.found.key || '?'} | score ${result.found.score}`
+          ? `=> ${result.found.title} - ${result.found.artist} | tom ${result.found.key || '?'} | fonte ${result.found.source || '?'} | score ${result.found.score}`
           : `=> HTTP ${result.status} ${result.error}`;
         console.log(`${String(index + 1).padStart(3, '0')} [${icon}] ${item.artist} - ${item.track} (${time}) ${found}`);
       } catch (error) {
