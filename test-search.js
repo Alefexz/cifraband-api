@@ -31,6 +31,9 @@ const TEST_CASES = [
   { category: 'Fallback multi-provedor', artist: 'Isadora Pompeo', track: 'Tetelestai (Ao Vivo) (feat. Carol Tauber)' },
   { category: 'Fallback multi-provedor', artist: 'Fernandinho', track: 'Ainda Que a Figueira' },
   { category: 'Fallback multi-provedor', artist: 'Aline Barros', track: 'Tudo é Teu' },
+  { category: 'Fallback multi-provedor', artist: 'Bruna Karla', track: 'Não Acabou' },
+  { category: 'Fallback multi-provedor', artist: 'Colo de Deus', track: 'Onde o Espírito de Deus Está' },
+  { category: 'Fallback multi-provedor', artist: 'FHOP', track: 'Ruja o Leão' },
 
   // ── Negativo confirmado: não aceitar só a primeira parte de um medley ──
   { category: 'Negativo confirmado — medley parcial', artist: 'FHOP', track: 'Ruja o Leão / Talita Cumi', expectFail: true },

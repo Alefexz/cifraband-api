@@ -928,6 +928,14 @@ function formatArtistSlug(text) {
         'coral kemuel': 'coral-kemuel',
         'kellen byanca': 'kellen-byanca-ofc',
 
+        // O Cifra Club e outros provedores usam o nome completo da
+        // comunidade, mas catálogos musicais costumam trazer só
+        // "Colo de Deus".
+        'colo de deus': 'comunidade-catolica-colo-de-deus',
+        'comunidade colo de deus': 'comunidade-catolica-colo-de-deus',
+        'comunidade catolica colo de deus':
+            'comunidade-catolica-colo-de-deus',
+
         // O catálogo de onde o app puxa resultados às vezes vem com o
         // nome civil completo, mas o Cifra Club usa o nome artístico.
         'gabriel guedes': 'gabriel-guedes',
