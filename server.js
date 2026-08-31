@@ -2618,6 +2618,11 @@ async function searchWebForCifraClub(
     const queries = [];
 
     for (const trackVariant of generateTrackTitleVariants(track)) {
+        addUniqueText(
+            queries,
+            `site:cifraclub.com.br ${trackVariant}`
+        );
+
         for (const artistVariant of generateArtistNameVariants(artist)) {
             addUniqueText(
                 queries,
