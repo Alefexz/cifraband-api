@@ -870,6 +870,10 @@ function formatArtistSlug(text) {
             'florianopolis-house-of-prayer',
 
         'aline barros': 'aline-barros',
+        'kemuel': 'coral-kemuel',
+        'grupo kemuel': 'coral-kemuel',
+        'coral kemuel': 'coral-kemuel',
+        'kellen byanca': 'kellen-byanca-ofc',
 
         // O catálogo de onde o app puxa resultados às vezes vem com o
         // nome civil completo, mas o Cifra Club usa o nome artístico.
@@ -1018,6 +1022,18 @@ function generateArtistSlugs(artist) {
     }
 
     if (
+        normalized === 'kemuel' ||
+        normalized === 'grupo kemuel' ||
+        normalized === 'coral kemuel'
+    ) {
+        add('coral-kemuel');
+    }
+
+    if (normalized === 'kellen byanca') {
+        add('kellen-byanca-ofc');
+    }
+
+    if (
         normalized === 'gabriel guedes' ||
         normalized === 'gabriel guedes de almeida'
     ) {
@@ -1108,6 +1124,22 @@ function generateTrackTitleVariants(track) {
     return variants;
 }
 
+function extractFeaturingSlug(track) {
+    const match =
+        String(track || '').match(
+            /\((?:feat|ft|part|partic|participacao|participação)\.?\s*([^)]+)\)/i
+        ) ||
+        String(track || '').match(
+            /\s+(?:feat|ft|part|partic|participacao|participação)\.?\s+(.+)$/i
+        );
+
+    if (!match) {
+        return '';
+    }
+
+    return basicTrackSlug(match[1]);
+}
+
 // ============================================================
 // POSSÍVEIS SLUGS DA MÚSICA
 // ============================================================
@@ -1129,6 +1161,7 @@ function generateTrackSlugs(track) {
 
     for (const variant of generateTrackTitleVariants(track)) {
         const base = basicTrackSlug(variant);
+        const featuringSlug = extractFeaturingSlug(track);
 
         add(base);
 
@@ -1153,6 +1186,28 @@ function generateTrackSlugs(track) {
         add(`${base}-pot-pourri-2`);
         add(`${base}-2`);
         add(`${base}-3`);
+
+        if (featuringSlug) {
+            add(`${base}-part-${featuringSlug}`);
+            add(`${base}-ft-${featuringSlug}`);
+            add(`${base}-feat-${featuringSlug}`);
+        }
+    }
+
+    const knownAliases = {
+        'diz': [
+            'diz-you-say'
+        ],
+        'oh-quao-lindo-esse-nome-e': [
+            'oh-quao-lindo-esse-nome-e-what-a-beautiful-name'
+        ],
+        'ovelha-em-treinamento': [
+            'ovelha-em-treinamento'
+        ]
+    };
+
+    for (const alias of knownAliases[basicTrackSlug(track)] || []) {
+        add(alias);
     }
 
     // ========================================================
