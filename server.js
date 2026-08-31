@@ -21,7 +21,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
     res.header(
         'Access-Control-Allow-Headers',
-        'Authorization,Content-Type,X-Firebase-AppCheck,X-Firebase-App-Check'
+        'Authorization,Content-Type'
     );
     if (req.method === 'OPTIONS') {
         return res.sendStatus(204);
@@ -240,45 +240,6 @@ function rateLimit({ name, windowMs, max }) {
 
         return next();
     };
-}
-
-async function verifyAppCheckIfRequired(req, res, next) {
-    if (String(process.env.REQUIRE_APP_CHECK || '').toLowerCase() !== 'true') {
-        return next();
-    }
-
-    const token =
-        req.headers['x-firebase-appcheck'] ||
-        req.headers['x-firebase-app-check'];
-
-    if (!token) {
-        return res.status(401).json({
-            error: 'missing_app_check',
-            message: 'Envie o token App Check no header X-Firebase-AppCheck.'
-        });
-    }
-
-    const firebaseAdmin = getFirebaseAdmin();
-    if (!firebaseAdmin) {
-        return res.status(503).json({
-            error: 'firebase_admin_unavailable',
-            message: 'Firebase Admin não foi inicializado no servidor.'
-        });
-    }
-
-    try {
-        req.appCheckToken =
-            await firebaseAdmin
-                .appCheck()
-                .verifyToken(String(token));
-
-        return next();
-    } catch (error) {
-        return res.status(401).json({
-            error: 'invalid_app_check',
-            message: 'Token App Check inválido ou expirado.'
-        });
-    }
 }
 
 async function assertNotificationTargetsInSameChurch(req, res, next) {
@@ -515,7 +476,6 @@ function normalizeNotificationData(data) {
 app.post(
     '/notificar',
     authenticateFirebaseUser,
-    verifyAppCheckIfRequired,
     rateLimit({
         name: 'notification',
         windowMs: NOTIFICATION_RATE_LIMIT_WINDOW_MS,
@@ -2576,7 +2536,6 @@ function stripDuplicatedArtistPrefix(artist, track) {
 app.get(
     '/searchSong',
     authenticateFirebaseUser,
-    verifyAppCheckIfRequired,
     rateLimit({
         name: 'searchSong',
         windowMs: SEARCH_RATE_LIMIT_WINDOW_MS,
