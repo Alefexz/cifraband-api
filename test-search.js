@@ -3,8 +3,9 @@
 // um relatório de pass/fail com o tempo de cada busca.
 //
 // Uso:
-//   node test-search.js
-//   API_BASE=http://localhost:3000 node test-search.js   (pra testar local)
+//   FIREBASE_ID_TOKEN=... node test-search.js
+//   FIREBASE_WEB_API_KEY=... node test-search.js
+//   API_BASE=http://localhost:3000 FIREBASE_ID_TOKEN=... node test-search.js
 //
 // Depende só do axios, que o projeto já usa.
 
@@ -14,6 +15,11 @@ const API_BASE = process.env.API_BASE || 'https://cifraband-api.onrender.com';
 const SLOW_THRESHOLD_MS = 15000; // acima disso, avisa mesmo quando acha
 
 const TEST_CASES = [
+  // ── Regressão: casos que já sabemos que funcionavam ──
+  { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida', track: 'Santo pra Sempre (Ao Vivo)' },
+  { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida', track: 'Vitorioso És (Ao Vivo)' },
+  { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida & Nivea Soares', track: 'A Bênção' },
+
   // ── Regressão: casos que já sabemos que funcionavam ──
   { category: 'Regressão', artist: 'Morada', track: 'É Tudo Sobre Você (Ao Vivo)' },
   { category: 'Regressão', artist: 'Morada', track: 'Quero Agradecer (Ao Vivo)' },
@@ -51,15 +57,38 @@ const TEST_CASES = [
   { category: 'Negativo — deve falhar rápido', artist: 'Artista Que Não Existe XYZ123', track: 'Música Inventada ABC789', expectFail: true },
 ];
 
+async function getAuthHeaders() {
+  if (process.env.FIREBASE_ID_TOKEN) {
+    return {
+      Authorization: `Bearer ${process.env.FIREBASE_ID_TOKEN}`
+    };
+  }
+
+  if (!process.env.FIREBASE_WEB_API_KEY) {
+    return {};
+  }
+
+  const response = await axios.post(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${process.env.FIREBASE_WEB_API_KEY}`,
+    { returnSecureToken: true },
+    { timeout: 20000 }
+  );
+
+  return {
+    Authorization: `Bearer ${response.data.idToken}`
+  };
+}
+
 function formatMs(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-async function runOne(testCase) {
+async function runOne(testCase, headers) {
   const start = Date.now();
   try {
     const response = await axios.get(`${API_BASE}/searchSong`, {
       params: { artist: testCase.artist, track: testCase.track },
+      headers,
       timeout: 60000,
       validateStatus: () => true
     });
@@ -99,6 +128,11 @@ async function runOne(testCase) {
 
 async function main() {
   console.log(`Testando contra: ${API_BASE}\n`);
+  const headers = await getAuthHeaders();
+
+  if (!headers.Authorization) {
+    console.log('Aviso: sem FIREBASE_ID_TOKEN ou FIREBASE_WEB_API_KEY. A API em produção deve retornar 401.\n');
+  }
 
   let passed = 0;
   let failed = 0;
@@ -110,7 +144,7 @@ async function main() {
       console.log(`\n── ${currentCategory} ──`);
     }
 
-    const result = await runOne(testCase);
+    const result = await runOne(testCase, headers);
     const icon = result.ok ? '✅' : '❌';
     const timeTag =
       result.elapsed > SLOW_THRESHOLD_MS

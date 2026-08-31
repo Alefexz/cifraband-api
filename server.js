@@ -42,6 +42,7 @@ const REQUEST_TIMEOUT = 9000;
 const DIRECT_CONCURRENCY = 6;
 const CATALOG_CONCURRENCY = 5;
 const SEARCH_CONCURRENCY = 5;
+const WEB_SEARCH_CONCURRENCY = 4;
 
 const NOTIFICATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const NOTIFICATION_RATE_LIMIT_MAX = 30;
@@ -714,6 +715,25 @@ function tokenize(text) {
         .filter(Boolean);
 }
 
+function addUniqueText(list, value) {
+    const clean =
+        String(value || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    if (!clean) return;
+
+    const key =
+        normalizeText(clean);
+
+    if (
+        key &&
+        !list.some(item => normalizeText(item) === key)
+    ) {
+        list.push(clean);
+    }
+}
+
 // ============================================================
 // PALAVRAS GENÉRICAS
 // ============================================================
@@ -754,6 +774,53 @@ function significantTokens(text) {
             !GENERIC_WORDS.has(token) &&
             !STOPWORDS.has(token)
     );
+}
+
+function hasSafeTitleMatch(requestedTrack, foundTitle) {
+    const requested =
+        normalizeText(coreTitle(requestedTrack));
+
+    const found =
+        normalizeText(coreTitle(foundTitle));
+
+    if (!requested || !found) {
+        return false;
+    }
+
+    if (requested === found) {
+        return true;
+    }
+
+    const requestedTokens =
+        significantTokens(requested);
+
+    const foundTokens =
+        significantTokens(found);
+
+    if (!requestedTokens.length || !foundTokens.length) {
+        return false;
+    }
+
+    if (requestedTokens.length === 1) {
+        const token = requestedTokens[0];
+        return token.length >= 4 && foundTokens.includes(token);
+    }
+
+    const allRequestedFound =
+        requestedTokens.every(
+            token => foundTokens.includes(token)
+        );
+
+    const allFoundRequested =
+        foundTokens.every(
+            token => requestedTokens.includes(token)
+        );
+
+    if (allRequestedFound || allFoundRequested) {
+        return true;
+    }
+
+    return similarity(requested, found) >= 0.62;
 }
 
 // FIX: parênteses/colchetes atrapalham a pontuação tanto quanto
@@ -822,6 +889,70 @@ function formatArtistSlug(text) {
     return normalized.replace(/\s+/g, '-');
 }
 
+function generateArtistNameVariants(artist) {
+    const original =
+        String(artist || '')
+            .replace(/\(.*?\)/g, '')
+            .replace(/\[.*?\]/g, '')
+            .replace(/\{.*?\}/g, '')
+            .trim();
+
+    const variants = [];
+
+    addUniqueText(variants, original);
+
+    const splitText =
+        original
+            .replace(/\s+(?:feat|ft|part|partic|participacao|participação)\.?\s+/gi, ' & ')
+            .replace(/\s+(?:com|with)\s+/gi, ' & ');
+
+    const parts =
+        splitText
+            .split(/\s*(?:,|&|\+|\be\b)\s*/i)
+            .map(part => part.trim())
+            .filter(Boolean);
+
+    for (const part of parts) {
+        addUniqueText(variants, part);
+    }
+
+    const snapshot = [...variants];
+
+    for (const value of snapshot) {
+        const normalized =
+            normalizeText(value);
+
+        const words =
+            normalized
+                .split(' ')
+                .filter(Boolean);
+
+        if (words.length >= 3) {
+            addUniqueText(
+                variants,
+                words.slice(0, 2).join(' ')
+            );
+        }
+
+        const withoutCivilSuffix =
+            normalized
+                .replace(/\s+de\s+[a-z0-9]+$/i, '')
+                .replace(/\s+da\s+[a-z0-9]+$/i, '')
+                .replace(/\s+do\s+[a-z0-9]+$/i, '')
+                .trim();
+
+        if (
+            withoutCivilSuffix &&
+            withoutCivilSuffix !== normalized &&
+            withoutCivilSuffix.split(' ').length >= 2
+        ) {
+            addUniqueText(variants, withoutCivilSuffix);
+        }
+    }
+
+    return variants;
+}
+
 // ============================================================
 // POSSÍVEIS SLUGS DO ARTISTA
 // ============================================================
@@ -849,17 +980,23 @@ function generateArtistSlugs(artist) {
         }
     }
 
-    add(formatArtistSlug(original));
-    add(normalized);
+    for (const variant of generateArtistNameVariants(original)) {
+        add(formatArtistSlug(variant));
+        add(normalizeText(variant));
+    }
 
     // Heurística geral (além do alias específico acima): vários artistas
     // "de nome composto" no Cifra Club usam só a primeira palavra como
     // slug — foi exatamente o caso do "nadson o ferinha" -> "nadson".
     // Custa pouco tentar, e a validação por score protege contra pegar
     // o artista errado por engano.
-    const firstWord = normalized.split(' ')[0];
-    if (firstWord && firstWord.length > 2) {
-        add(firstWord);
+    for (const variant of generateArtistNameVariants(original)) {
+        const firstWord =
+            normalizeText(variant).split(' ')[0];
+
+        if (firstWord && firstWord.length > 2) {
+            add(firstWord);
+        }
     }
 
     if (normalized === 'morada') {
@@ -885,24 +1022,6 @@ function generateArtistSlugs(artist) {
         normalized === 'gabriel guedes de almeida'
     ) {
         add('gabriel-guedes');
-    }
-
-    // Heurística conservadora para nomes civis/artísticos: se o artista
-    // vier como "Nome Sobrenome de X", tentar também só "Nome Sobrenome".
-    // A validação por score continua impedindo falso positivo grosseiro.
-    const withoutCivilSuffix = normalized
-        .replace(/\s+de\s+[a-z0-9]+$/i, '')
-        .replace(/\s+da\s+[a-z0-9]+$/i, '')
-        .replace(/\s+do\s+[a-z0-9]+$/i, '')
-        .trim();
-
-    if (
-        withoutCivilSuffix &&
-        withoutCivilSuffix !== normalized &&
-        withoutCivilSuffix.split(' ').length >= 2
-    ) {
-        add(formatArtistSlug(withoutCivilSuffix));
-        add(withoutCivilSuffix);
     }
 
     return result;
@@ -935,6 +1054,60 @@ function basicTrackSlug(text) {
     return clean.replace(/\s+/g, '-');
 }
 
+function generateTrackTitleVariants(track) {
+    const original =
+        String(track || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    const variants = [];
+
+    function addWithPraPara(value) {
+        addUniqueText(variants, value);
+
+        const clean =
+            String(value || '');
+
+        addUniqueText(
+            variants,
+            clean.replace(/\bpra\b/gi, 'para')
+        );
+
+        addUniqueText(
+            variants,
+            clean.replace(/\bpara\b/gi, 'pra')
+        );
+    }
+
+    addWithPraPara(original);
+    addWithPraPara(coreTitle(original));
+
+    const withoutFeaturing =
+        original
+            .replace(/\s+(?:feat|ft|part|partic|participacao|participação)\.?\s+.*$/i, '')
+            .trim();
+
+    addWithPraPara(withoutFeaturing);
+
+    const withoutVersionWords =
+        coreTitle(original)
+            .replace(/\b(?:ao vivo|live|acustico|acústico|versao|versão|remix|playback)\b/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    addWithPraPara(withoutVersionWords);
+
+    const firstPart =
+        coreTitle(original)
+            .split('/')
+            .map(part => part.trim())
+            .filter(Boolean)[0];
+
+    addWithPraPara(firstPart);
+
+    return variants;
+}
+
 // ============================================================
 // POSSÍVEIS SLUGS DA MÚSICA
 // ============================================================
@@ -954,31 +1127,33 @@ function generateTrackSlugs(track) {
         }
     }
 
-    const base = basicTrackSlug(track);
+    for (const variant of generateTrackTitleVariants(track)) {
+        const base = basicTrackSlug(variant);
 
-    add(base);
+        add(base);
 
-    // Remove informações de apresentação
-    add(
-        base
-            .replace(/-ao-vivo$/g, '')
-            .replace(/-live$/g, '')
-            .replace(/-medley$/g, '')
-            .replace(/-pot-pourri$/g, '')
-    );
+        // Remove informações de apresentação
+        add(
+            base
+                .replace(/-ao-vivo$/g, '')
+                .replace(/-live$/g, '')
+                .replace(/-medley$/g, '')
+                .replace(/-pot-pourri$/g, '')
+        );
 
-    // Adiciona formatos comuns do Cifra Club
-    add(`${base}-ao-vivo`);
-    add(`${base}-medley`);
-    add(`${base}-pot-pourri`);
+        // Adiciona formatos comuns do Cifra Club
+        add(`${base}-ao-vivo`);
+        add(`${base}-medley`);
+        add(`${base}-pot-pourri`);
 
-    add(`${base}-ao-vivo-medley`);
-    add(`${base}-ao-vivo-pot-pourri`);
+        add(`${base}-ao-vivo-medley`);
+        add(`${base}-ao-vivo-pot-pourri`);
 
-    add(`${base}-medley-2`);
-    add(`${base}-pot-pourri-2`);
-    add(`${base}-2`);
-    add(`${base}-3`);
+        add(`${base}-medley-2`);
+        add(`${base}-pot-pourri-2`);
+        add(`${base}-2`);
+        add(`${base}-3`);
+    }
 
     // ========================================================
     // MEDLEYS
@@ -1862,7 +2037,13 @@ async function inspectSongUrl(
     // NÃO ACEITAR RESULTADO MUITO DISTANTE
     // ========================================================
 
-    if (score < 45) {
+    if (
+        score < 45 ||
+        !hasSafeTitleMatch(
+            requestedTrack,
+            pageTitle
+        )
+    ) {
         return null;
     }
 
@@ -2197,15 +2378,27 @@ async function searchCifraClub(
     artist,
     track
 ) {
-    const queries = [
-        `${track} ${artist}`,
-        `${artist} ${track}`,
-        track
-    ];
+    const queries = [];
+
+    for (const trackVariant of generateTrackTitleVariants(track)) {
+        addUniqueText(queries, trackVariant);
+
+        for (const artistVariant of generateArtistNameVariants(artist)) {
+            addUniqueText(
+                queries,
+                `${trackVariant} ${artistVariant}`
+            );
+
+            addUniqueText(
+                queries,
+                `${artistVariant} ${trackVariant}`
+            );
+        }
+    }
 
     const links = [];
 
-    for (const query of queries) {
+    for (const query of queries.slice(0, 18)) {
         const slug =
             normalizeText(query)
                 .replace(/\s+/g, '-');
@@ -2313,6 +2506,173 @@ async function searchCifraClub(
         await runConcurrent(
             ranked,
             SEARCH_CONCURRENCY,
+            async item => {
+                return await inspectSongUrl(
+                    item.url,
+                    artist,
+                    track
+                );
+            }
+        );
+
+    return results.sort(
+        (a, b) =>
+            b.score - a.score
+    );
+}
+
+// ============================================================
+// BUSCA WEB COMO ÚLTIMO RECURSO
+// ============================================================
+
+function extractSearchResultUrl(href) {
+    if (!href) return '';
+
+    try {
+        const parsed =
+            new URL(
+                href,
+                'https://duckduckgo.com'
+            );
+
+        const uddg =
+            parsed.searchParams.get('uddg');
+
+        if (uddg) {
+            return decodeURIComponent(uddg);
+        }
+
+        return parsed.toString();
+    } catch (error) {
+        return '';
+    }
+}
+
+async function searchWebForCifraClub(
+    artist,
+    track
+) {
+    const queries = [];
+
+    for (const trackVariant of generateTrackTitleVariants(track)) {
+        for (const artistVariant of generateArtistNameVariants(artist)) {
+            addUniqueText(
+                queries,
+                `site:cifraclub.com.br ${trackVariant} ${artistVariant}`
+            );
+        }
+    }
+
+    const links = [];
+
+    for (const query of queries.slice(0, 8)) {
+        try {
+            const response =
+                await axios.get(
+                    'https://duckduckgo.com/html/',
+                    {
+                        timeout:
+                            REQUEST_TIMEOUT,
+                        headers: HEADERS,
+                        params: {
+                            q: query
+                        }
+                    }
+                );
+
+            const $ =
+                cheerio.load(
+                    response.data
+                );
+
+            $('a[href]').each(
+                (index, element) => {
+                    const href =
+                        $(element).attr('href');
+
+                    const absolute =
+                        extractSearchResultUrl(
+                            href
+                        );
+
+                    if (
+                        !isValidCifraClubUrl(
+                            absolute
+                        )
+                    ) {
+                        return;
+                    }
+
+                    const title =
+                        $(element)
+                            .text()
+                            .replace(/\s+/g, ' ')
+                            .trim();
+
+                    links.push({
+                        url:
+                            absolute,
+                        title
+                    });
+                }
+            );
+        } catch (error) {
+            console.log(
+                `⚠️ Busca web falhou: ${query} (${error.message})`
+            );
+        }
+    }
+
+    const unique =
+        new Map();
+
+    for (const item of links) {
+        const cleanUrl =
+            item.url
+                .split('?')[0]
+                .replace(/\/+$/, '') + '/';
+
+        const score =
+            scoreSong(
+                artist,
+                track,
+                '',
+                item.title
+            );
+
+        if (
+            !unique.has(cleanUrl) ||
+            unique.get(cleanUrl).score < score
+        ) {
+            unique.set(
+                cleanUrl,
+                {
+                    url:
+                        cleanUrl,
+                    title:
+                        item.title,
+                    score
+                }
+            );
+        }
+    }
+
+    const ranked =
+        [...unique.values()]
+            .sort(
+                (a, b) =>
+                    b.score - a.score
+            )
+            .slice(0, 12);
+
+    console.log(
+        `🛟 Busca web: ${ranked.length} candidatos`
+    );
+
+    const results =
+        await runConcurrent(
+            ranked,
+            WEB_SEARCH_CONCURRENCY,
             async item => {
                 return await inspectSongUrl(
                     item.url,
@@ -2482,12 +2842,45 @@ async function findSong(
     }
 
     // ========================================================
-    // 4. ÚLTIMA TENTATIVA
+    // 4. BUSCA WEB COMO ÚLTIMO RECURSO
     // ========================================================
 
     console.log('');
     console.log(
-        `4️⃣ ÚLTIMA TENTATIVA COM TODOS OS RESULTADOS (${allResults.length} ao todo)...`
+        '4️⃣ BUSCA WEB POR LINKS DO CIFRA CLUB...'
+    );
+
+    results =
+        await searchWebForCifraClub(
+            artist,
+            track
+        );
+
+    allResults.push(...results);
+
+    best =
+        chooseBestResult(
+            results
+        );
+
+    if (
+        best &&
+        best.score >= 70
+    ) {
+        console.log(
+            `🏆 Encontrada pela busca web`
+        );
+
+        return best;
+    }
+
+    // ========================================================
+    // 5. ÚLTIMA TENTATIVA
+    // ========================================================
+
+    console.log('');
+    console.log(
+        `5️⃣ ÚLTIMA TENTATIVA COM TODOS OS RESULTADOS (${allResults.length} ao todo)...`
     );
 
     best =
