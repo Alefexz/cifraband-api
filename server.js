@@ -43,6 +43,9 @@ const DIRECT_CONCURRENCY = 6;
 const CATALOG_CONCURRENCY = 5;
 const SEARCH_CONCURRENCY = 5;
 const WEB_SEARCH_CONCURRENCY = 4;
+const WEB_QUERY_CONCURRENCY = 3;
+const CIFRACLUB_WEB_QUERY_LIMIT = 5;
+const ALTERNATIVE_WEB_QUERY_LIMIT = 8;
 
 const NOTIFICATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const NOTIFICATION_RATE_LIMIT_MAX = 30;
@@ -2950,67 +2953,76 @@ async function searchWebForCifraClub(
 
     const links = [];
 
-    for (const query of queries.slice(0, 8)) {
-        try {
-            const response =
-                await axios.get(
-                    'https://duckduckgo.com/html/',
-                    {
-                        timeout:
-                            REQUEST_TIMEOUT,
-                        headers: HEADERS,
-                        params: {
-                            q: query
+    await runConcurrent(
+        queries.slice(
+            0,
+            CIFRACLUB_WEB_QUERY_LIMIT
+        ),
+        WEB_QUERY_CONCURRENCY,
+        async query => {
+            try {
+                const response =
+                    await axios.get(
+                        'https://duckduckgo.com/html/',
+                        {
+                            timeout:
+                                REQUEST_TIMEOUT,
+                            headers: HEADERS,
+                            params: {
+                                q: query
+                            }
                         }
-                    }
-                );
+                    );
 
-            const $ =
-                cheerio.load(
-                    response.data
-                );
+                const $ =
+                    cheerio.load(
+                        response.data
+                    );
 
-            $('a[href]').each(
-                (index, element) => {
-                    const href =
-                        $(element).attr('href');
+                $('a[href]').each(
+                    (index, element) => {
+                        const href =
+                            $(element).attr('href');
 
-                    const absolute =
-                        extractSearchResultUrl(
-                            href
-                        );
+                        const absolute =
+                            extractSearchResultUrl(
+                                href
+                            );
 
-                    if (
-                        !isValidCifraClubUrl(
-                            absolute
-                        )
-                    ) {
-                        return;
-                    }
-
-                    const title =
-                        $(element)
-                            .text()
-                            .replace(/\s+/g, ' ')
-                            .trim();
-
-                    links.push({
-                        url:
-                            absolute,
-                        title:
-                            cleanLinkTitle(
-                                title,
+                        if (
+                            !isValidCifraClubUrl(
                                 absolute
                             )
-                    });
-                }
-            );
-        } catch (error) {
-            console.log(
-                `⚠️ Busca web falhou: ${query} (${error.message})`
-            );
+                        ) {
+                            return;
+                        }
+
+                        const title =
+                            $(element)
+                                .text()
+                                .replace(/\s+/g, ' ')
+                                .trim();
+
+                        links.push({
+                            url:
+                                absolute,
+                            title:
+                                cleanLinkTitle(
+                                    title,
+                                    absolute
+                                )
+                        });
+                    }
+                );
+            } catch (error) {
+                console.log(
+                    `⚠️ Busca web falhou: ${query} (${error.message})`
+                );
+            }
+
+            return null;
         }
-    }
+    );
 
     const unique =
         new Map();
@@ -3283,65 +3295,74 @@ async function searchWebForAlternativeProviders(
 
     const links = [];
 
-    for (const query of queries.slice(0, 16)) {
-        try {
-            const response =
-                await axios.get(
-                    'https://duckduckgo.com/html/',
-                    {
-                        timeout:
-                            REQUEST_TIMEOUT,
-                        headers: HEADERS,
-                        params: {
-                            q: query
+    await runConcurrent(
+        queries.slice(
+            0,
+            ALTERNATIVE_WEB_QUERY_LIMIT
+        ),
+        WEB_QUERY_CONCURRENCY,
+        async query => {
+            try {
+                const response =
+                    await axios.get(
+                        'https://duckduckgo.com/html/',
+                        {
+                            timeout:
+                                REQUEST_TIMEOUT,
+                            headers: HEADERS,
+                            params: {
+                                q: query
+                            }
                         }
+                    );
+
+                const $ =
+                    cheerio.load(response.data);
+
+                $('a[href]').each(
+                    (index, element) => {
+                        const href =
+                            $(element).attr('href');
+
+                        const absolute =
+                            extractSearchResultUrl(href);
+
+                        const provider =
+                            alternativeProviderForUrl(
+                                absolute
+                            );
+
+                        if (!provider) {
+                            return;
+                        }
+
+                        const title =
+                            $(element)
+                                .text()
+                                .replace(/\s+/g, ' ')
+                                .trim();
+
+                        links.push({
+                            provider,
+                            url:
+                                absolute,
+                            title:
+                                cleanAlternativeLinkTitle(
+                                    title,
+                                    absolute
+                                )
+                        });
                     }
                 );
+            } catch (error) {
+                console.log(
+                    `⚠️ Busca web alternativa falhou: ${query} (${error.message})`
+                );
+            }
 
-            const $ =
-                cheerio.load(response.data);
-
-            $('a[href]').each(
-                (index, element) => {
-                    const href =
-                        $(element).attr('href');
-
-                    const absolute =
-                        extractSearchResultUrl(href);
-
-                    const provider =
-                        alternativeProviderForUrl(
-                            absolute
-                        );
-
-                    if (!provider) {
-                        return;
-                    }
-
-                    const title =
-                        $(element)
-                            .text()
-                            .replace(/\s+/g, ' ')
-                            .trim();
-
-                    links.push({
-                        provider,
-                        url:
-                            absolute,
-                        title:
-                            cleanAlternativeLinkTitle(
-                                title,
-                                absolute
-                            )
-                    });
-                }
-            );
-        } catch (error) {
-            console.log(
-                `⚠️ Busca web alternativa falhou: ${query} (${error.message})`
-            );
+            return null;
         }
-    }
+    );
 
     const unique =
         new Map();
@@ -3568,45 +3589,12 @@ async function findSong(
     }
 
     // ========================================================
-    // 4. BUSCA WEB COMO ÚLTIMO RECURSO
+    // 4. PROVEDORES ALTERNATIVOS POR URL DIRETA
     // ========================================================
 
     console.log('');
     console.log(
-        '4️⃣ BUSCA WEB POR LINKS DO CIFRA CLUB...'
-    );
-
-    results =
-        await searchWebForCifraClub(
-            artist,
-            track
-        );
-
-    allResults.push(...results);
-
-    best =
-        chooseBestResult(
-            results
-        );
-
-    if (
-        best &&
-        best.score >= 70
-    ) {
-        console.log(
-            `🏆 Encontrada pela busca web`
-        );
-
-        return best;
-    }
-
-    // ========================================================
-    // 5. PROVEDORES ALTERNATIVOS POR URL DIRETA
-    // ========================================================
-
-    console.log('');
-    console.log(
-        '5️⃣ TESTANDO PROVEDORES ALTERNATIVOS...'
+        '4️⃣ TESTANDO PROVEDORES ALTERNATIVOS...'
     );
 
     results =
@@ -3628,6 +3616,39 @@ async function findSong(
     ) {
         console.log(
             `🏆 Encontrada em provedor alternativo direto`
+        );
+
+        return best;
+    }
+
+    // ========================================================
+    // 5. BUSCA WEB COMO ÚLTIMO RECURSO NO CIFRA CLUB
+    // ========================================================
+
+    console.log('');
+    console.log(
+        '5️⃣ BUSCA WEB POR LINKS DO CIFRA CLUB...'
+    );
+
+    results =
+        await searchWebForCifraClub(
+            artist,
+            track
+        );
+
+    allResults.push(...results);
+
+    best =
+        chooseBestResult(
+            results
+        );
+
+    if (
+        best &&
+        best.score >= 70
+    ) {
+        console.log(
+            `🏆 Encontrada pela busca web`
         );
 
         return best;
@@ -3693,7 +3714,7 @@ async function findSong(
 
     throw Object.assign(
         new Error(
-            'Cifra não encontrada no Cifra Club.'
+            'Cifra não encontrada nas fontes disponíveis.'
         ),
         {
             code: 'SONG_NOT_FOUND',
