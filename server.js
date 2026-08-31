@@ -1649,7 +1649,8 @@ function cleanLinkTitle(rawTitle, url) {
     if (
         !title ||
         title.length < 3 ||
-        BAD_LINK_TITLES.has(normalized)
+        BAD_LINK_TITLES.has(normalized) ||
+        normalized.includes('opcoes')
     ) {
         return titleFromCifraClubUrl(url);
     }
