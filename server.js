@@ -53,6 +53,13 @@ const SEARCH_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SEARCH_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
+const BUNDLED_APP_VERSION = '1.0.9';
+const BUNDLED_APP_BUILD = 9;
+const BUNDLED_APK_URL =
+    'https://github.com/Alefexz/cifra_band/releases/latest';
+const BUNDLED_RELEASE_NOTES =
+    'Atualização 1.0.9 disponível com feedback dentro do app e melhorias no fluxo de atualização.';
+
 // ============================================================
 // CACHE
 // ============================================================
@@ -117,6 +124,34 @@ function parseIntegerEnv(value, fallback) {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function getAppVersionPayload() {
+    const configuredBuild =
+        parseIntegerEnv(process.env.APP_LATEST_BUILD, BUNDLED_APP_BUILD);
+    const latestBuild =
+        Math.max(configuredBuild, BUNDLED_APP_BUILD);
+    const useBundledVersion =
+        latestBuild === BUNDLED_APP_BUILD &&
+        configuredBuild < BUNDLED_APP_BUILD;
+
+    return {
+        latestVersion: useBundledVersion
+            ? BUNDLED_APP_VERSION
+            : process.env.APP_LATEST_VERSION || BUNDLED_APP_VERSION,
+        latestBuild,
+        minimumBuild:
+            parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
+        updateRequired:
+            parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false),
+        apkUrl:
+            process.env.APP_APK_URL ||
+            BUNDLED_APK_URL,
+        releaseNotes: useBundledVersion
+            ? BUNDLED_RELEASE_NOTES
+            : process.env.APP_RELEASE_NOTES || BUNDLED_RELEASE_NOTES,
+        checkedAt: new Date().toISOString()
+    };
+}
+
 app.get(
     '/app-version',
     rateLimit({
@@ -125,23 +160,7 @@ app.get(
         max: 120
     }),
     (req, res) => {
-        res.status(200).json({
-            latestVersion:
-                process.env.APP_LATEST_VERSION || '1.0.4',
-            latestBuild:
-                parseIntegerEnv(process.env.APP_LATEST_BUILD, 5),
-            minimumBuild:
-                parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
-            updateRequired:
-                parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false),
-            apkUrl:
-                process.env.APP_APK_URL ||
-                'https://github.com/Alefexz/cifra_band/releases/latest',
-            releaseNotes:
-                process.env.APP_RELEASE_NOTES ||
-                'Nova versão disponível com melhorias e correções.',
-            checkedAt: new Date().toISOString()
-        });
+        res.status(200).json(getAppVersionPayload());
     }
 );
 
