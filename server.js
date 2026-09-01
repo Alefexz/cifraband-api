@@ -69,6 +69,16 @@ const FEEDBACK_SEVERITIES =
     new Set(['critical', 'high', 'medium', 'low']);
 const SUPPORT_TICKET_STATUSES =
     new Set(['open', 'resolved', 'closed']);
+const SUPPORT_OWNER_EMAILS =
+    new Set(
+        String(
+            process.env.SUPPORT_OWNER_EMAILS ||
+            'niotico2006@gmail.com,niotio2006@gmail.com'
+        )
+            .split(',')
+            .map(email => email.trim().toLowerCase())
+            .filter(Boolean)
+    );
 
 // ============================================================
 // CACHE
@@ -647,8 +657,17 @@ async function loadSupportAdmin(req, res, next) {
             userDoc.data() || {};
         const churchId =
             String(userData.church_id || '').trim();
+        const email =
+            String(req.firebaseUser.email || userData.email || '')
+                .trim()
+                .toLowerCase();
+        const isGlobalSupportOwner =
+            SUPPORT_OWNER_EMAILS.has(email);
 
-        if (!userDoc.exists || userData.is_admin !== true || !churchId) {
+        if (
+            !isGlobalSupportOwner &&
+            (!userDoc.exists || userData.is_admin !== true || !churchId)
+        ) {
             return res.status(403).json({
                 error: 'support_admin_required',
                 message:
@@ -658,7 +677,8 @@ async function loadSupportAdmin(req, res, next) {
 
         req.supportAdmin = {
             uid: req.firebaseUser.uid,
-            churchId
+            churchId,
+            isGlobal: isGlobalSupportOwner
         };
         return next();
     } catch (error) {
@@ -697,13 +717,22 @@ app.get(
         }
 
         try {
-            const snapshot =
-                await firebaseAdmin
+            let query =
+                firebaseAdmin
                     .firestore()
-                    .collection('support_tickets')
-                    .where('user.church_id', '==', req.supportAdmin.churchId)
-                    .limit(limit)
-                    .get();
+                    .collection('support_tickets');
+
+            if (!req.supportAdmin.isGlobal) {
+                query =
+                    query.where(
+                        'user.church_id',
+                        '==',
+                        req.supportAdmin.churchId
+                    );
+            }
+
+            const snapshot =
+                await query.limit(limit).get();
 
             const tickets =
                 snapshot.docs
@@ -847,7 +876,10 @@ app.patch(
             const ticketChurchId =
                 String(ticket.user?.church_id || '').trim();
 
-            if (ticketChurchId !== req.supportAdmin.churchId) {
+            if (
+                !req.supportAdmin.isGlobal &&
+                ticketChurchId !== req.supportAdmin.churchId
+            ) {
                 return res.status(403).json({
                     error: 'support_ticket_forbidden',
                     message:
