@@ -102,6 +102,49 @@ app.get('/', (req, res) => {
     });
 });
 
+function parseBooleanEnv(value, fallback = false) {
+    if (value === undefined || value === null || value === '') {
+        return fallback;
+    }
+
+    return ['1', 'true', 'yes', 'sim'].includes(
+        String(value).trim().toLowerCase()
+    );
+}
+
+function parseIntegerEnv(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+app.get(
+    '/app-version',
+    rateLimit({
+        name: 'appVersion',
+        windowMs: 10 * 60 * 1000,
+        max: 120
+    }),
+    (req, res) => {
+        res.status(200).json({
+            latestVersion:
+                process.env.APP_LATEST_VERSION || '1.0.3',
+            latestBuild:
+                parseIntegerEnv(process.env.APP_LATEST_BUILD, 4),
+            minimumBuild:
+                parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
+            updateRequired:
+                parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false),
+            apkUrl:
+                process.env.APP_APK_URL ||
+                'https://github.com/Alefexz/cifra_band/releases/latest',
+            releaseNotes:
+                process.env.APP_RELEASE_NOTES ||
+                'Nova versão disponível com melhorias e correções.',
+            checkedAt: new Date().toISOString()
+        });
+    }
+);
+
 // ============================================================
 // FIREBASE ADMIN / PUSH
 // ============================================================
