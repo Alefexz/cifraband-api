@@ -18,7 +18,7 @@ app.use(express.json({ limit: '1mb' }));
 // de chegar no endpoint.
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
     res.header(
         'Access-Control-Allow-Headers',
         'Authorization,Content-Type'
@@ -57,12 +57,12 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.1.0';
-const BUNDLED_APP_BUILD = 10;
+const BUNDLED_APP_VERSION = '1.1.1';
+const BUNDLED_APP_BUILD = 11;
 const BUNDLED_APK_URL =
     'https://github.com/Alefexz/cifra_band/releases/latest';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.1.0 disponível com Central de Suporte para acompanhar feedbacks do app.';
+    'Atualização 1.1.1 disponível com respostas no suporte e correção dos botões do painel.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
@@ -734,6 +734,66 @@ app.get(
     }
 );
 
+app.get(
+    '/my-support-tickets',
+    authenticateFirebaseUser,
+    rateLimit({
+        name: 'mySupportTickets',
+        windowMs: SUPPORT_RATE_LIMIT_WINDOW_MS,
+        max: SUPPORT_RATE_LIMIT_MAX
+    }),
+    async (req, res) => {
+        const firebaseAdmin = getFirebaseAdmin();
+
+        if (!firebaseAdmin) {
+            return res.status(503).json({
+                error: 'firebase_admin_unavailable',
+                message: 'Firebase Admin não foi inicializado no servidor.'
+            });
+        }
+
+        try {
+            const snapshot =
+                await firebaseAdmin
+                    .firestore()
+                    .collection('support_tickets')
+                    .where('user.uid', '==', req.firebaseUser.uid)
+                    .limit(50)
+                    .get();
+
+            const tickets =
+                snapshot.docs
+                    .map(doc => ({
+                        id: doc.id,
+                        ...serializeSupportValue(doc.data())
+                    }))
+                    .sort((a, b) =>
+                        String(b.created_at || '').localeCompare(
+                            String(a.created_at || '')
+                        )
+                    );
+
+            const hasPendingReply =
+                tickets.some(ticket =>
+                    ticket.status === 'open' &&
+                    !String(ticket.admin_reply?.message || '').trim()
+                );
+
+            return res.status(200).json({
+                tickets,
+                count: tickets.length,
+                canCreateNew: !hasPendingReply
+            });
+        } catch (error) {
+            console.error('Falha ao listar meus tickets:', error);
+            return res.status(500).json({
+                error: 'my_support_tickets_list_failed',
+                message: 'Não consegui carregar seus feedbacks agora.'
+            });
+        }
+    }
+);
+
 app.patch(
     '/support-tickets/:ticketId',
     authenticateFirebaseUser,
@@ -749,6 +809,8 @@ app.patch(
             String(req.params.ticketId || '').trim();
         const status =
             String(req.body?.status || '').trim();
+        const reply =
+            String(req.body?.reply || '').trim().slice(0, 1200);
 
         if (!ticketId) {
             return res.status(400).json({
@@ -793,19 +855,34 @@ app.patch(
                 });
             }
 
-            await ticketRef.update({
+            const updatePayload = {
                 status,
                 updated_at: admin.firestore.FieldValue.serverTimestamp(),
                 handled_by: {
                     uid: req.supportAdmin.uid,
                     at: admin.firestore.FieldValue.serverTimestamp()
                 }
-            });
+            };
+
+            if (reply) {
+                updatePayload.admin_reply = {
+                    message: reply,
+                    responder_uid: req.supportAdmin.uid,
+                    responder_name:
+                        req.firebaseUser.name ||
+                        req.firebaseUser.email ||
+                        'Suporte Cifra Band',
+                    created_at: admin.firestore.FieldValue.serverTimestamp()
+                };
+            }
+
+            await ticketRef.update(updatePayload);
 
             return res.status(200).json({
                 success: true,
                 ticketId,
-                status
+                status,
+                replied: Boolean(reply)
             });
         } catch (error) {
             console.error('Falha ao atualizar ticket:', error);
@@ -880,6 +957,26 @@ app.post(
                     .get();
             const userData =
                 userDoc.data() || {};
+            const pendingSnapshot =
+                await firestore
+                    .collection('support_tickets')
+                    .where('user.uid', '==', req.firebaseUser.uid)
+                    .limit(20)
+                    .get();
+            const hasPendingReply =
+                pendingSnapshot.docs.some(doc => {
+                    const ticket = doc.data() || {};
+                    return !String(ticket.admin_reply?.message || '').trim();
+                });
+
+            if (hasPendingReply) {
+                return res.status(409).json({
+                    error: 'feedback_waiting_admin_reply',
+                    message:
+                        'Você já tem um feedback aberto. Aguarde uma resposta antes de enviar outro.'
+                });
+            }
+
             const now =
                 admin.firestore.FieldValue.serverTimestamp();
             const ticketRef =
