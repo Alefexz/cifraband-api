@@ -127,9 +127,9 @@ app.get(
     (req, res) => {
         res.status(200).json({
             latestVersion:
-                process.env.APP_LATEST_VERSION || '1.0.3',
+                process.env.APP_LATEST_VERSION || '1.0.4',
             latestBuild:
-                parseIntegerEnv(process.env.APP_LATEST_BUILD, 4),
+                parseIntegerEnv(process.env.APP_LATEST_BUILD, 5),
             minimumBuild:
                 parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
             updateRequired:
