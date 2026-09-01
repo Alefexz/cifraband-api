@@ -53,18 +53,22 @@ const SEARCH_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SEARCH_RATE_LIMIT_MAX = 60;
 const FEEDBACK_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const FEEDBACK_RATE_LIMIT_MAX = 8;
+const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.0.9';
-const BUNDLED_APP_BUILD = 9;
+const BUNDLED_APP_VERSION = '1.1.0';
+const BUNDLED_APP_BUILD = 10;
 const BUNDLED_APK_URL =
     'https://github.com/Alefexz/cifra_band/releases/latest';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.0.9 disponível com feedback dentro do app e melhorias no fluxo de atualização.';
+    'Atualização 1.1.0 disponível com Central de Suporte para acompanhar feedbacks do app.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
     new Set(['critical', 'high', 'medium', 'low']);
+const SUPPORT_TICKET_STATUSES =
+    new Set(['open', 'resolved', 'closed']);
 
 // ============================================================
 // CACHE
@@ -596,6 +600,222 @@ function sanitizeSupportObject(value) {
 
     return {};
 }
+
+function serializeSupportValue(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value?.toDate === 'function') {
+        return value.toDate().toISOString();
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(serializeSupportValue);
+    }
+
+    if (typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [
+                key,
+                serializeSupportValue(item)
+            ])
+        );
+    }
+
+    return value;
+}
+
+async function loadSupportAdmin(req, res, next) {
+    const firebaseAdmin = getFirebaseAdmin();
+
+    if (!firebaseAdmin) {
+        return res.status(503).json({
+            error: 'firebase_admin_unavailable',
+            message: 'Firebase Admin não foi inicializado no servidor.'
+        });
+    }
+
+    try {
+        const userDoc =
+            await firebaseAdmin
+                .firestore()
+                .collection('users')
+                .doc(req.firebaseUser.uid)
+                .get();
+        const userData =
+            userDoc.data() || {};
+        const churchId =
+            String(userData.church_id || '').trim();
+
+        if (!userDoc.exists || userData.is_admin !== true || !churchId) {
+            return res.status(403).json({
+                error: 'support_admin_required',
+                message:
+                    'Apenas administradores de ministério podem acessar a central de suporte.'
+            });
+        }
+
+        req.supportAdmin = {
+            uid: req.firebaseUser.uid,
+            churchId
+        };
+        return next();
+    } catch (error) {
+        console.error('Falha ao validar admin de suporte:', error);
+        return res.status(500).json({
+            error: 'support_admin_validation_failed',
+            message: 'Não consegui validar sua permissão de suporte.'
+        });
+    }
+}
+
+app.get(
+    '/support-tickets',
+    authenticateFirebaseUser,
+    rateLimit({
+        name: 'supportTickets',
+        windowMs: SUPPORT_RATE_LIMIT_WINDOW_MS,
+        max: SUPPORT_RATE_LIMIT_MAX
+    }),
+    loadSupportAdmin,
+    async (req, res) => {
+        const firebaseAdmin = getFirebaseAdmin();
+        const status =
+            String(req.query.status || 'open').trim();
+        const limit =
+            Math.min(
+                Math.max(parseIntegerEnv(req.query.limit, 50), 1),
+                100
+            );
+
+        if (status !== 'all' && !SUPPORT_TICKET_STATUSES.has(status)) {
+            return res.status(400).json({
+                error: 'invalid_support_ticket_status',
+                message: 'Status de ticket inválido.'
+            });
+        }
+
+        try {
+            const snapshot =
+                await firebaseAdmin
+                    .firestore()
+                    .collection('support_tickets')
+                    .where('user.church_id', '==', req.supportAdmin.churchId)
+                    .limit(limit)
+                    .get();
+
+            const tickets =
+                snapshot.docs
+                    .map(doc => ({
+                        id: doc.id,
+                        ...serializeSupportValue(doc.data())
+                    }))
+                    .filter(ticket =>
+                        status === 'all' || ticket.status === status
+                    )
+                    .sort((a, b) =>
+                        String(b.created_at || '').localeCompare(
+                            String(a.created_at || '')
+                        )
+                    );
+
+            return res.status(200).json({
+                tickets,
+                count: tickets.length
+            });
+        } catch (error) {
+            console.error('Falha ao listar tickets:', error);
+            return res.status(500).json({
+                error: 'support_tickets_list_failed',
+                message: 'Não consegui carregar os feedbacks agora.'
+            });
+        }
+    }
+);
+
+app.patch(
+    '/support-tickets/:ticketId',
+    authenticateFirebaseUser,
+    rateLimit({
+        name: 'supportTicketUpdate',
+        windowMs: SUPPORT_RATE_LIMIT_WINDOW_MS,
+        max: SUPPORT_RATE_LIMIT_MAX
+    }),
+    loadSupportAdmin,
+    async (req, res) => {
+        const firebaseAdmin = getFirebaseAdmin();
+        const ticketId =
+            String(req.params.ticketId || '').trim();
+        const status =
+            String(req.body?.status || '').trim();
+
+        if (!ticketId) {
+            return res.status(400).json({
+                error: 'missing_ticket_id',
+                message: 'Informe o ticket.'
+            });
+        }
+
+        if (!SUPPORT_TICKET_STATUSES.has(status)) {
+            return res.status(400).json({
+                error: 'invalid_support_ticket_status',
+                message: 'Status de ticket inválido.'
+            });
+        }
+
+        try {
+            const ticketRef =
+                firebaseAdmin
+                    .firestore()
+                    .collection('support_tickets')
+                    .doc(ticketId);
+            const ticketDoc =
+                await ticketRef.get();
+
+            if (!ticketDoc.exists) {
+                return res.status(404).json({
+                    error: 'support_ticket_not_found',
+                    message: 'Feedback não encontrado.'
+                });
+            }
+
+            const ticket =
+                ticketDoc.data() || {};
+            const ticketChurchId =
+                String(ticket.user?.church_id || '').trim();
+
+            if (ticketChurchId !== req.supportAdmin.churchId) {
+                return res.status(403).json({
+                    error: 'support_ticket_forbidden',
+                    message:
+                        'Você só pode alterar feedbacks do seu ministério.'
+                });
+            }
+
+            await ticketRef.update({
+                status,
+                updated_at: admin.firestore.FieldValue.serverTimestamp(),
+                handled_by: {
+                    uid: req.supportAdmin.uid,
+                    at: admin.firestore.FieldValue.serverTimestamp()
+                }
+            });
+
+            return res.status(200).json({
+                success: true,
+                ticketId,
+                status
+            });
+        } catch (error) {
+            console.error('Falha ao atualizar ticket:', error);
+            return res.status(500).json({
+                error: 'support_ticket_update_failed',
+                message: 'Não consegui atualizar o feedback agora.'
+            });
+        }
+    }
+);
 
 app.post(
     '/feedback',
