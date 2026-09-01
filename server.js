@@ -51,6 +51,8 @@ const NOTIFICATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const NOTIFICATION_RATE_LIMIT_MAX = 30;
 const SEARCH_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SEARCH_RATE_LIMIT_MAX = 60;
+const FEEDBACK_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const FEEDBACK_RATE_LIMIT_MAX = 8;
 const rateLimitBuckets = new Map();
 
 const BUNDLED_APP_VERSION = '1.0.9';
@@ -59,6 +61,10 @@ const BUNDLED_APK_URL =
     'https://github.com/Alefexz/cifra_band/releases/latest';
 const BUNDLED_RELEASE_NOTES =
     'Atualização 1.0.9 disponível com feedback dentro do app e melhorias no fluxo de atualização.';
+const FEEDBACK_TYPES =
+    new Set(['bug', 'wrong_chord', 'question', 'suggestion']);
+const FEEDBACK_SEVERITIES =
+    new Set(['critical', 'high', 'medium', 'low']);
 
 // ============================================================
 // CACHE
@@ -538,6 +544,180 @@ function normalizeNotificationData(data) {
 
     return result;
 }
+
+function sanitizeSupportValue(value, depth = 0) {
+    if (depth > 3 || value === undefined) {
+        return null;
+    }
+
+    if (value === null || typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null;
+    }
+
+    if (typeof value === 'string') {
+        return value.trim().slice(0, 500);
+    }
+
+    if (Array.isArray(value)) {
+        return value
+            .slice(0, 20)
+            .map(item => sanitizeSupportValue(item, depth + 1));
+    }
+
+    if (typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value)
+                .slice(0, 40)
+                .map(([key, item]) => [
+                    String(key).slice(0, 80),
+                    sanitizeSupportValue(item, depth + 1)
+                ])
+        );
+    }
+
+    return String(value).slice(0, 500);
+}
+
+function sanitizeSupportObject(value) {
+    const sanitized =
+        sanitizeSupportValue(value);
+
+    if (
+        sanitized &&
+        typeof sanitized === 'object' &&
+        !Array.isArray(sanitized)
+    ) {
+        return sanitized;
+    }
+
+    return {};
+}
+
+app.post(
+    '/feedback',
+    authenticateFirebaseUser,
+    rateLimit({
+        name: 'feedback',
+        windowMs: FEEDBACK_RATE_LIMIT_WINDOW_MS,
+        max: FEEDBACK_RATE_LIMIT_MAX
+    }),
+    async (req, res) => {
+        const body = req.body || {};
+        const type =
+            String(body.type || '').trim();
+        const severity =
+            String(body.severity || '').trim();
+        const message =
+            String(body.message || '').trim();
+        const screen =
+            String(body.screen || '').trim().slice(0, 80);
+
+        if (!FEEDBACK_TYPES.has(type)) {
+            return res.status(400).json({
+                error: 'invalid_feedback_type',
+                message: 'Tipo de feedback inválido.'
+            });
+        }
+
+        if (!FEEDBACK_SEVERITIES.has(severity)) {
+            return res.status(400).json({
+                error: 'invalid_feedback_severity',
+                message: 'Prioridade de feedback inválida.'
+            });
+        }
+
+        if (message.length < 8 || message.length > 1200) {
+            return res.status(400).json({
+                error: 'invalid_feedback_message',
+                message: 'Descreva o feedback entre 8 e 1200 caracteres.'
+            });
+        }
+
+        const firebaseAdmin = getFirebaseAdmin();
+
+        if (!firebaseAdmin) {
+            return res.status(503).json({
+                error: 'firebase_admin_unavailable',
+                message:
+                    'Firebase Admin não foi inicializado no servidor.',
+                detail:
+                    firebaseAdminInitError?.message ||
+                    'Credencial ausente ou inválida.'
+            });
+        }
+
+        try {
+            const firestore =
+                firebaseAdmin.firestore();
+            const userDoc =
+                await firestore
+                    .collection('users')
+                    .doc(req.firebaseUser.uid)
+                    .get();
+            const userData =
+                userDoc.data() || {};
+            const now =
+                admin.firestore.FieldValue.serverTimestamp();
+            const ticketRef =
+                await firestore
+                    .collection('support_tickets')
+                    .add({
+                        type,
+                        severity,
+                        message,
+                        screen: screen || null,
+                        status: 'open',
+                        source: 'api',
+                        created_at: now,
+                        updated_at: now,
+                        user: {
+                            uid: req.firebaseUser.uid,
+                            email:
+                                req.firebaseUser.email ||
+                                userData.email ||
+                                null,
+                            name:
+                                userData.name ||
+                                req.firebaseUser.name ||
+                                null,
+                            church_id:
+                                userData.church_id ||
+                                null,
+                            is_admin:
+                                userData.is_admin === true
+                        },
+                        app: sanitizeSupportObject(body.app),
+                        device: sanitizeSupportObject(body.device),
+                        request: {
+                            ip:
+                                String(req.headers['x-forwarded-for'] || '')
+                                    .split(',')[0]
+                                    .trim() ||
+                                req.ip ||
+                                null,
+                            user_agent:
+                                String(req.headers['user-agent'] || '')
+                                    .slice(0, 300)
+                        }
+                    });
+
+            return res.status(201).json({
+                success: true,
+                ticketId: ticketRef.id
+            });
+        } catch (error) {
+            console.error('Falha ao registrar feedback:', error);
+            return res.status(500).json({
+                error: 'feedback_write_failed',
+                message: 'Não consegui registrar o feedback agora.'
+            });
+        }
+    }
+);
 
 app.post(
     '/notificar',
