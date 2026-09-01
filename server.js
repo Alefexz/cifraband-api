@@ -57,12 +57,12 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.1.1';
-const BUNDLED_APP_BUILD = 11;
+const BUNDLED_APP_VERSION = '1.1.2';
+const BUNDLED_APP_BUILD = 12;
 const BUNDLED_APK_URL =
     'https://github.com/Alefexz/cifra_band/releases/latest';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.1.1 disponível com respostas no suporte e correção dos botões do painel.';
+    'Atualização 1.1.2 disponível com diagnóstico de busca, logs no suporte e notificações melhoradas.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
@@ -559,6 +559,158 @@ function normalizeNotificationData(data) {
     return result;
 }
 
+async function sendSystemNotificationToUsers(
+    firebaseAdmin,
+    firestore,
+    userIds,
+    {
+        title,
+        body,
+        data
+    }
+) {
+    const targetUserIds =
+        [...new Set(
+            (Array.isArray(userIds) ? userIds : [])
+                .map(uid => String(uid || '').trim())
+                .filter(Boolean)
+        )].slice(0, 100);
+
+    if (!targetUserIds.length) {
+        return {
+            requestedUsers: 0,
+            targetTokens: 0,
+            sent: 0,
+            failed: 0
+        };
+    }
+
+    const userDocs =
+        await Promise.all(
+            targetUserIds.map(uid =>
+                firestore
+                    .collection('users')
+                    .doc(uid)
+                    .get()
+            )
+        );
+
+    const tokenToUserIds =
+        new Map();
+
+    for (let index = 0; index < userDocs.length; index++) {
+        const userDoc = userDocs[index];
+        if (!userDoc.exists) continue;
+
+        const userData =
+            userDoc.data() || {};
+        const tokens = [];
+
+        if (Array.isArray(userData.fcmTokens)) {
+            tokens.push(...userData.fcmTokens);
+        }
+
+        if (typeof userData.fcmToken === 'string') {
+            tokens.push(userData.fcmToken);
+        }
+
+        for (const token of tokens) {
+            const cleanToken =
+                String(token || '').trim();
+            if (!cleanToken) continue;
+
+            const owners =
+                tokenToUserIds.get(cleanToken) || [];
+            owners.push(targetUserIds[index]);
+            tokenToUserIds.set(cleanToken, owners);
+        }
+    }
+
+    const tokens =
+        [...tokenToUserIds.keys()].slice(0, 500);
+
+    if (!tokens.length) {
+        return {
+            requestedUsers: targetUserIds.length,
+            targetTokens: 0,
+            sent: 0,
+            failed: 0
+        };
+    }
+
+    const response =
+        await firebaseAdmin
+            .messaging()
+            .sendEachForMulticast({
+                tokens,
+                notification: {
+                    title: String(title || '').trim().slice(0, 80),
+                    body: String(body || '').trim().slice(0, 180)
+                },
+                data:
+                    normalizeNotificationData(data),
+                android: {
+                    priority: 'high',
+                    notification: {
+                        channelId: 'cifra_band_alerts'
+                    }
+                },
+                apns: {
+                    payload: {
+                        aps: {
+                            sound: 'default'
+                        }
+                    }
+                }
+            });
+
+    const invalidTokens = [];
+
+    response.responses.forEach((item, index) => {
+        const code =
+            item.error?.code;
+
+        if (
+            code === 'messaging/invalid-registration-token' ||
+            code === 'messaging/registration-token-not-registered'
+        ) {
+            invalidTokens.push(tokens[index]);
+        }
+    });
+
+    if (invalidTokens.length) {
+        const cleanupPromises = [];
+
+        for (const invalidToken of invalidTokens) {
+            const owners =
+                tokenToUserIds.get(invalidToken) || [];
+
+            for (const uid of owners) {
+                cleanupPromises.push(
+                    firestore
+                        .collection('users')
+                        .doc(uid)
+                        .set({
+                            fcmTokens:
+                                firebaseAdmin.firestore.FieldValue.arrayRemove(
+                                    invalidToken
+                                )
+                        }, { merge: true })
+                );
+            }
+        }
+
+        await Promise.allSettled(cleanupPromises);
+    }
+
+    return {
+        requestedUsers: targetUserIds.length,
+        targetTokens: tokens.length,
+        sent: response.successCount,
+        failed: response.failureCount
+    };
+}
+
 function sanitizeSupportValue(value, depth = 0) {
     if (depth > 3 || value === undefined) {
         return null;
@@ -609,6 +761,17 @@ function sanitizeSupportObject(value) {
     }
 
     return {};
+}
+
+function sanitizeSupportLogs(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value
+        .slice(-80)
+        .map(item => sanitizeSupportObject(item))
+        .filter(item => Object.keys(item).length > 0);
 }
 
 function serializeSupportValue(value) {
@@ -856,9 +1019,10 @@ app.patch(
         }
 
         try {
+            const firestore =
+                firebaseAdmin.firestore();
             const ticketRef =
-                firebaseAdmin
-                    .firestore()
+                firestore
                     .collection('support_tickets')
                     .doc(ticketId);
             const ticketDoc =
@@ -910,11 +1074,47 @@ app.patch(
 
             await ticketRef.update(updatePayload);
 
+            let notificationResult = null;
+
+            if (reply) {
+                const ticketOwnerUid =
+                    String(ticket.user?.uid || '').trim();
+
+                if (ticketOwnerUid) {
+                    try {
+                        notificationResult =
+                            await sendSystemNotificationToUsers(
+                                firebaseAdmin,
+                                firestore,
+                                [ticketOwnerUid],
+                                {
+                                    title: 'Suporte respondeu',
+                                    body:
+                                        reply.length > 120
+                                            ? `${reply.slice(0, 117)}...`
+                                            : reply,
+                                    data: {
+                                        type: 'support_reply',
+                                        ticketId,
+                                        status
+                                    }
+                                }
+                            );
+                    } catch (notificationError) {
+                        console.error(
+                            'Falha ao notificar resposta do suporte:',
+                            notificationError.message
+                        );
+                    }
+                }
+            }
+
             return res.status(200).json({
                 success: true,
                 ticketId,
                 status,
-                replied: Boolean(reply)
+                replied: Boolean(reply),
+                notification: notificationResult
             });
         } catch (error) {
             console.error('Falha ao atualizar ticket:', error);
@@ -1041,6 +1241,7 @@ app.post(
                         },
                         app: sanitizeSupportObject(body.app),
                         device: sanitizeSupportObject(body.device),
+                        logs: sanitizeSupportLogs(body.logs),
                         request: {
                             ip:
                                 String(req.headers['x-forwarded-for'] || '')
@@ -4161,6 +4362,142 @@ function chooseBestResult(
     return sorted[0];
 }
 
+function summarizeSearchCandidates(results) {
+    return [...results]
+        .sort(
+            (a, b) =>
+                (b.score || 0) - (a.score || 0)
+        )
+        .slice(0, 5)
+        .map(item => ({
+            title:
+                String(item.title || '').slice(0, 120),
+            artist:
+                String(item.artist || '').slice(0, 120),
+            source:
+                String(item.source || '').slice(0, 60),
+            url:
+                String(item.url || '').slice(0, 240),
+            score:
+                Math.round(item.score || 0)
+        }));
+}
+
+function buildSongSearchError({
+    artist,
+    track,
+    reason,
+    message,
+    allResults = [],
+    checkedSources = []
+}) {
+    const candidates =
+        summarizeSearchCandidates(allResults);
+
+    const reasonMessages = {
+        medley_not_found:
+            'Não encontrei uma cifra completa desse medley nas fontes disponíveis. Para evitar cifra pela metade, não abri resultado parcial.',
+        no_reliable_match:
+            'Encontrei resultados parecidos, mas nenhum bateu com segurança com esse artista e essa música.',
+        no_published_chord:
+            'Não encontrei cifra publicada para esse artista e essa música nas fontes atuais.',
+        search_failed:
+            'A busca falhou antes de terminar. Tente novamente em alguns instantes.'
+    };
+
+    return {
+        code: 'SONG_NOT_FOUND',
+        statusCode: 404,
+        reason,
+        message:
+            message ||
+            reasonMessages[reason] ||
+            reasonMessages.no_published_chord,
+        userMessage:
+            reasonMessages[reason] ||
+            reasonMessages.no_published_chord,
+        diagnostics: {
+            artist,
+            track,
+            normalizedArtist:
+                normalizeText(artist),
+            normalizedTrack:
+                normalizeText(track),
+            checkedSources,
+            candidateCount:
+                allResults.length,
+            topCandidates:
+                candidates
+        }
+    };
+}
+
+function throwSongSearchError(options) {
+    const payload =
+        buildSongSearchError(options);
+    throw Object.assign(
+        new Error(payload.message),
+        payload
+    );
+}
+
+function searchErrorResponse(error, artist, track) {
+    if (error.code !== 'SONG_NOT_FOUND') {
+        return {
+            error:
+                error.code ||
+                'server_error',
+            reason:
+                'search_failed',
+            message:
+                error.message ||
+                'Falha interna ao buscar cifra.',
+            userMessage:
+                'Não consegui terminar a busca agora. Tente novamente em alguns instantes.',
+            diagnostics: {
+                artist,
+                track,
+                normalizedArtist:
+                    normalizeText(artist),
+                normalizedTrack:
+                    normalizeText(track)
+            }
+        };
+    }
+
+    const fallback =
+        buildSongSearchError({
+            artist,
+            track,
+            reason:
+                error.reason ||
+                (error.code === 'SONG_NOT_FOUND'
+                    ? 'no_published_chord'
+                    : 'search_failed'),
+            message:
+                error.message
+        });
+
+    return {
+        error:
+            error.code ||
+            fallback.code ||
+            'server_error',
+        reason:
+            error.reason ||
+            fallback.reason,
+        message:
+            error.message ||
+            fallback.message,
+        userMessage:
+            error.userMessage ||
+            fallback.userMessage,
+        diagnostics:
+            error.diagnostics ||
+            fallback.diagnostics
+    };
+}
+
 // ============================================================
 // BUSCA PRINCIPAL
 // ============================================================
@@ -4203,6 +4540,14 @@ async function findSong(
     // com score abaixo do limiar de aceite imediato de uma etapa
     // anterior, era descartado pra sempre em vez de virar fallback.
     const allResults = [];
+    const checkedSources = [
+        'cifraclub_direct',
+        'cifraclub_artist_catalog',
+        'cifraclub_internal_search',
+        'alternative_direct',
+        'cifraclub_web_search',
+        'alternative_web_search'
+    ];
 
     let results =
         await searchDirect(
@@ -4332,15 +4677,14 @@ async function findSong(
             '🧩 Medley/composição não encontrada como cifra completa; pulando busca web ampla para evitar resultado parcial.'
         );
 
-        throw Object.assign(
-            new Error(
-                'Cifra completa do medley não encontrada nas fontes disponíveis.'
-            ),
-            {
-                code: 'SONG_NOT_FOUND',
-                statusCode: 404
-            }
-        );
+        throwSongSearchError({
+            artist,
+            track,
+            reason: 'medley_not_found',
+            allResults,
+            checkedSources:
+                checkedSources.slice(0, 4)
+        });
     }
 
     // ========================================================
@@ -4434,15 +4778,16 @@ async function findSong(
         return best;
     }
 
-    throw Object.assign(
-        new Error(
-            'Cifra não encontrada nas fontes disponíveis.'
-        ),
-        {
-            code: 'SONG_NOT_FOUND',
-            statusCode: 404
-        }
-    );
+    throwSongSearchError({
+        artist,
+        track,
+        reason:
+            allResults.length
+                ? 'no_reliable_match'
+                : 'no_published_chord',
+        allResults,
+        checkedSources
+    });
 }
 
 // ============================================================
@@ -4577,19 +4922,19 @@ app.get(
                     .status(200)
                     .json(result);
             } catch (error) {
+                const payload =
+                    searchErrorResponse(
+                        error,
+                        artist,
+                        track
+                    );
+
                 return res
                     .status(
                         error.statusCode ||
                             500
                     )
-                    .json({
-                        error:
-                            error.code ||
-                            'server_error',
-
-                        message:
-                            error.message
-                    });
+                    .json(payload);
             }
         }
 
@@ -4746,19 +5091,19 @@ app.get(
                 '══════════════════════════════════════'
             );
 
+            const payload =
+                searchErrorResponse(
+                    error,
+                    artist,
+                    track
+                );
+
             return res
                 .status(
                     error.statusCode ||
                         500
                 )
-                .json({
-                    error:
-                        error.code ||
-                        'server_error',
-
-                    message:
-                        error.message
-                });
+                .json(payload);
         } finally {
             inFlight.delete(
                 cacheKey
