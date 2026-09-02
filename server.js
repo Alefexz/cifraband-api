@@ -57,12 +57,12 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.3.0';
-const BUNDLED_APP_BUILD = 15;
+const BUNDLED_APP_VERSION = '1.4.0';
+const BUNDLED_APP_BUILD = 16;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.3.0-build-15.apk';
+    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.4.0-build-16.apk';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.3.0 disponível com biblioteca oficial, importação de cifras, ensaio, exportação e ferramentas musicais.';
+    'Atualização 1.4.0 disponível com Culto Guiado, YouTube na cifra, rolagem por trechos, correções na Biblioteca Oficial e acesso global restrito ao dono do app.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
@@ -73,7 +73,7 @@ const SUPPORT_OWNER_EMAILS =
     new Set(
         String(
             process.env.SUPPORT_OWNER_EMAILS ||
-            'niotico2006@gmail.com,niotio2006@gmail.com'
+            'alef08052006@gmail.com,niotico2006@gmail.com,niotio2006@gmail.com'
         )
             .split(',')
             .map(email => email.trim().toLowerCase())
@@ -804,26 +804,6 @@ function supportMessage({
 
 async function supportRecipientsForTicket(firestore, ticketUser) {
     const recipients = new Set();
-    const churchId =
-        String(ticketUser?.church_id || '').trim();
-
-    if (churchId) {
-        const adminsSnapshot =
-            await firestore
-                .collection('users')
-                .where('church_id', '==', churchId)
-                .limit(80)
-                .get();
-
-        adminsSnapshot.docs.forEach(doc => {
-            const userData =
-                doc.data() || {};
-
-            if (doc.id !== ticketUser.uid && userData.is_admin === true) {
-                recipients.add(doc.id);
-            }
-        });
-    }
 
     for (const email of SUPPORT_OWNER_EMAILS) {
         try {
@@ -899,14 +879,11 @@ async function loadSupportAdmin(req, res, next) {
         const isGlobalSupportOwner =
             SUPPORT_OWNER_EMAILS.has(email);
 
-        if (
-            !isGlobalSupportOwner &&
-            (!userDoc.exists || userData.is_admin !== true || !churchId)
-        ) {
+        if (!isGlobalSupportOwner) {
             return res.status(403).json({
                 error: 'support_admin_required',
                 message:
-                    'Apenas administradores de ministério podem acessar a central de suporte.'
+                    'Apenas o dono do Cifra Band pode acessar a central global de suporte.'
             });
         }
 
