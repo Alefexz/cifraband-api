@@ -152,6 +152,13 @@ function getAppVersionPayload() {
     const useBundledVersion =
         latestBuild === BUNDLED_APP_BUILD &&
         configuredBuild < BUNDLED_APP_BUILD;
+    const configuredApkUrl = process.env.APP_APK_URL || '';
+    const useBundledApk =
+        latestBuild === BUNDLED_APP_BUILD &&
+        (
+            configuredApkUrl === '' ||
+            configuredApkUrl.includes('/releases/latest')
+        );
 
     return {
         latestVersion: useBundledVersion
@@ -162,9 +169,7 @@ function getAppVersionPayload() {
             parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
         updateRequired:
             parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false),
-        apkUrl:
-            process.env.APP_APK_URL ||
-            BUNDLED_APK_URL,
+        apkUrl: useBundledApk ? BUNDLED_APK_URL : configuredApkUrl,
         releaseNotes: useBundledVersion
             ? BUNDLED_RELEASE_NOTES
             : process.env.APP_RELEASE_NOTES || BUNDLED_RELEASE_NOTES,
