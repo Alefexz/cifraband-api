@@ -174,7 +174,8 @@ function getAppVersionPayload() {
                 BUNDLED_MINIMUM_BUILD
             ),
         updateRequired:
-            parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false),
+            parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false) ||
+            BUNDLED_MINIMUM_BUILD >= BUNDLED_APP_BUILD,
         apkUrl: useBundledApk ? BUNDLED_APK_URL : configuredApkUrl,
         releaseNotes: useBundledVersion
             ? BUNDLED_RELEASE_NOTES
