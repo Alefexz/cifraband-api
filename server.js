@@ -57,12 +57,12 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.1.4';
-const BUNDLED_APP_BUILD = 14;
+const BUNDLED_APP_VERSION = '1.3.0';
+const BUNDLED_APP_BUILD = 15;
 const BUNDLED_APK_URL =
     'https://github.com/Alefexz/cifra_band/releases/latest';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.1.4 disponível com central de suporte inteligente, conversa no chamado e observabilidade reforçada.';
+    'Atualização 1.3.0 disponível com biblioteca oficial, importação de cifras, ensaio, exportação e ferramentas musicais.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
