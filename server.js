@@ -145,19 +145,24 @@ function parseIntegerEnv(value, fallback) {
 }
 
 function getAppVersionPayload() {
+    const configuredVersion = process.env.APP_LATEST_VERSION || '';
     const configuredBuild =
         parseIntegerEnv(process.env.APP_LATEST_BUILD, BUNDLED_APP_BUILD);
     const latestBuild =
         Math.max(configuredBuild, BUNDLED_APP_BUILD);
     const useBundledVersion =
         latestBuild === BUNDLED_APP_BUILD &&
-        configuredBuild < BUNDLED_APP_BUILD;
+        (configuredBuild < BUNDLED_APP_BUILD || configuredVersion !== BUNDLED_APP_VERSION);
     const configuredApkUrl = process.env.APP_APK_URL || '';
+    const configuredApkLooksOld =
+        configuredApkUrl.includes('/v1.3.0/') ||
+        configuredApkUrl.includes('1.3.0-build-15') ||
+        configuredApkUrl.includes('/releases/latest');
     const useBundledApk =
         latestBuild === BUNDLED_APP_BUILD &&
         (
             configuredApkUrl === '' ||
-            configuredApkUrl.includes('/releases/latest')
+            configuredApkLooksOld
         );
 
     return {
