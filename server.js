@@ -2554,59 +2554,12 @@ function isLikelyChordLine(line) {
     return chords > 0 && chords >= tokens.length / 2;
 }
 
-function countChordRoot(content, key) {
-    const target = normalizeKeyValue(key);
-    if (!target) return 0;
-
-    let count = 0;
-    for (const line of String(content || '').split('\n')) {
-        if (!isLikelyChordLine(line)) continue;
-
-        for (const token of line.trim().split(/\s+/)) {
-            if (chordRootQuality(token) === target) {
-                count++;
-            }
-        }
-    }
-
-    return count;
-}
-
-function minorRealKeyFromShape(originalKey, minorShape, capo) {
-    const inferred = transposeKeyValue(minorShape, capo);
-    const originalRoot = removeMinorKey(originalKey);
-
-    if (
-        NOTE_INDEX[originalRoot] !== undefined &&
-        NOTE_INDEX[originalRoot] === NOTE_INDEX[removeMinorKey(inferred)]
-    ) {
-        return `${originalRoot}m`;
-    }
-
-    return inferred;
-}
-
 function repairSongKeyInfo(data) {
     const response = { ...data };
     const capoMatch = String(response.capo || '').match(/\d+/);
-    const capoNumber = capoMatch ? Number(capoMatch[0]) : 0;
 
     let originalKey = normalizeKeyValue(response.originalKey);
     let shapeKey = normalizeKeyValue(response.shapeKey);
-
-    if (shapeKey && !isMinorKeyValue(shapeKey)) {
-        const minorShape = `${removeMinorKey(shapeKey)}m`;
-        const minorCount = countChordRoot(response.content, minorShape);
-        const majorCount = countChordRoot(response.content, shapeKey);
-
-        if (minorCount > majorCount) {
-            shapeKey = minorShape;
-        }
-    }
-
-    if (shapeKey && isMinorKeyValue(shapeKey) && !isMinorKeyValue(originalKey) && capoNumber > 0) {
-        originalKey = minorRealKeyFromShape(originalKey, shapeKey, capoNumber);
-    }
 
     response.originalKey = originalKey || 'C';
     response.shapeKey = shapeKey || '';
