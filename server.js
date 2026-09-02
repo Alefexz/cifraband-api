@@ -60,7 +60,7 @@ const rateLimitBuckets = new Map();
 const BUNDLED_APP_VERSION = '1.3.0';
 const BUNDLED_APP_BUILD = 15;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/latest';
+    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.3.0-build-15.apk';
 const BUNDLED_RELEASE_NOTES =
     'Atualização 1.3.0 disponível com biblioteca oficial, importação de cifras, ensaio, exportação e ferramentas musicais.';
 const FEEDBACK_TYPES =
