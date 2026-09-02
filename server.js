@@ -46,6 +46,7 @@ const WEB_SEARCH_CONCURRENCY = 4;
 const WEB_QUERY_CONCURRENCY = 3;
 const CIFRACLUB_WEB_QUERY_LIMIT = 5;
 const ALTERNATIVE_WEB_QUERY_LIMIT = 8;
+const YOUTUBE_REFERENCE_QUERY_LIMIT = 4;
 
 const NOTIFICATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const NOTIFICATION_RATE_LIMIT_MAX = 30;
@@ -57,28 +58,25 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.4.0';
-const BUNDLED_APP_BUILD = 16;
+const BUNDLED_APP_VERSION = '1.5.0';
+const BUNDLED_APP_BUILD = 18;
+const BUNDLED_MINIMUM_BUILD = 18;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.4.0-build-16.apk';
+    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.5.0-build-18.apk';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.4.0 disponível com Culto Guiado, YouTube na cifra, rolagem por trechos, correções na Biblioteca Oficial e acesso global restrito ao dono do app.';
+    'Atualização obrigatória 1.5.0: segurança do dono do app, graus e instrumentos mais completos, YouTube em cifras encontradas e Culto Guiado com player minimizável.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
     new Set(['critical', 'high', 'medium', 'low']);
 const SUPPORT_TICKET_STATUSES =
     new Set(['open', 'resolved', 'closed']);
+const PRODUCT_OWNER_EMAIL =
+    String(process.env.PRODUCT_OWNER_EMAIL || 'alef08052006@gmail.com')
+        .trim()
+        .toLowerCase();
 const SUPPORT_OWNER_EMAILS =
-    new Set(
-        String(
-            process.env.SUPPORT_OWNER_EMAILS ||
-            'alef08052006@gmail.com,niotico2006@gmail.com,niotio2006@gmail.com'
-        )
-            .split(',')
-            .map(email => email.trim().toLowerCase())
-            .filter(Boolean)
-    );
+    new Set(PRODUCT_OWNER_EMAIL ? [PRODUCT_OWNER_EMAIL] : []);
 
 // ============================================================
 // CACHE
@@ -155,8 +153,8 @@ function getAppVersionPayload() {
         (configuredBuild < BUNDLED_APP_BUILD || configuredVersion !== BUNDLED_APP_VERSION);
     const configuredApkUrl = process.env.APP_APK_URL || '';
     const configuredApkLooksOld =
-        configuredApkUrl.includes('/v1.3.0/') ||
-        configuredApkUrl.includes('1.3.0-build-15') ||
+        configuredBuild < BUNDLED_APP_BUILD ||
+        !configuredApkUrl.includes(`build-${BUNDLED_APP_BUILD}`) ||
         configuredApkUrl.includes('/releases/latest');
     const useBundledApk =
         latestBuild === BUNDLED_APP_BUILD &&
@@ -171,7 +169,10 @@ function getAppVersionPayload() {
             : process.env.APP_LATEST_VERSION || BUNDLED_APP_VERSION,
         latestBuild,
         minimumBuild:
-            parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
+            Math.max(
+                parseIntegerEnv(process.env.APP_MINIMUM_BUILD, 1),
+                BUNDLED_MINIMUM_BUILD
+            ),
         updateRequired:
             parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false),
         apkUrl: useBundledApk ? BUNDLED_APK_URL : configuredApkUrl,
@@ -2636,6 +2637,10 @@ async function getGlobalSongCache(artist, track) {
             capo: cached.capo || '',
             content: cached.content || '',
             url: cached.url || '',
+            referenceUrl: cached.referenceUrl || '',
+            referenceSource: cached.referenceSource || '',
+            referenceTitle: cached.referenceTitle || '',
+            referenceScore: cached.referenceScore || 0,
             source: cached.source || 'global_cache',
             searchScore: cached.searchScore || 100
         });
@@ -2658,8 +2663,24 @@ async function getGlobalSongCache(artist, track) {
         if (
             response.originalKey !== (cached.originalKey || 'C') ||
             response.shapeKey !== (cached.shapeKey || '') ||
-            response.capo !== (cached.capo || '')
+            response.capo !== (cached.capo || '') ||
+            !response.referenceUrl
         ) {
+            if (!response.referenceUrl) {
+                const reference =
+                    await resolveYoutubeReference(
+                        response.artist || artist,
+                        response.title || track
+                    );
+
+                if (reference) {
+                    response.referenceUrl = reference.url;
+                    response.referenceSource = reference.source;
+                    response.referenceTitle = reference.title;
+                    response.referenceScore = reference.score;
+                }
+            }
+
             saveGlobalSongCache(artist, track, response);
         }
 
@@ -2703,6 +2724,10 @@ async function saveGlobalSongCache(artist, track, data) {
                 capo: repaired.capo || '',
                 content: repaired.content || '',
                 url: repaired.url || '',
+                referenceUrl: repaired.referenceUrl || '',
+                referenceSource: repaired.referenceSource || '',
+                referenceTitle: repaired.referenceTitle || '',
+                referenceScore: repaired.referenceScore || 0,
                 source: repaired.source || '',
                 searchScore: repaired.searchScore || 0,
                 created_at: firebaseAdmin.firestore.FieldValue.serverTimestamp(),
@@ -2735,6 +2760,268 @@ function getCatalogCache(key) {
     }
 
     return item.data;
+}
+
+function extractYoutubeVideoId(url) {
+    const value =
+        String(url || '')
+            .trim()
+            .replace(/&amp;/g, '&');
+
+    if (!value) return '';
+
+    const patterns = [
+        /(?:youtube\.com\/watch\?[^#]*v=)([_\-a-zA-Z0-9]{11})/,
+        /(?:youtu\.be\/)([_\-a-zA-Z0-9]{11})/,
+        /(?:youtube\.com\/embed\/)([_\-a-zA-Z0-9]{11})/,
+        /(?:youtube\.com\/shorts\/)([_\-a-zA-Z0-9]{11})/
+    ];
+
+    for (const pattern of patterns) {
+        const match =
+            value.match(pattern);
+
+        if (match) return match[1];
+    }
+
+    return '';
+}
+
+function normalizeYoutubeWatchUrl(url) {
+    const videoId =
+        extractYoutubeVideoId(url);
+
+    return videoId
+        ? `https://www.youtube.com/watch?v=${videoId}`
+        : '';
+}
+
+function scoreYoutubeReference({ title, url }, artist, track) {
+    const videoId =
+        extractYoutubeVideoId(url);
+
+    if (!videoId) return -100;
+
+    const normalizedTitle =
+        normalizeText(title);
+    const normalizedArtist =
+        normalizeText(artist);
+    const normalizedTrack =
+        normalizeText(track);
+
+    let score =
+        scoreSong(artist, track, artist, title);
+
+    if (normalizedTitle.includes(normalizedTrack)) score += 30;
+    if (normalizedTitle.includes(normalizedArtist)) score += 22;
+
+    if (/\b(oficial|official|ao vivo|live|clipe|vídeo|video|lyric|letra)\b/i.test(title)) {
+        score += 12;
+    }
+
+    if (/\b(cover|karaok[eê]|playback|aula|tutorial|como tocar|cifra|viol[aã]o|teclado)\b/i.test(title)) {
+        score -= 35;
+    }
+
+    if (/shorts\//i.test(url)) score -= 25;
+
+    return score;
+}
+
+async function searchYoutubeReferenceLinks(artist, track) {
+    const queries = [
+        `${artist} ${track} oficial`,
+        `${artist} ${track} ao vivo`,
+        `${artist} ${track} lyric video`,
+        `${artist} ${track}`
+    ];
+    const links = [];
+
+    await runConcurrent(
+        queries.slice(0, YOUTUBE_REFERENCE_QUERY_LIMIT),
+        WEB_QUERY_CONCURRENCY,
+        async query => {
+            try {
+                const response =
+                    await axios.get(
+                        'https://duckduckgo.com/html/',
+                        {
+                            timeout: REQUEST_TIMEOUT,
+                            headers: HEADERS,
+                            params: {
+                                q: `site:youtube.com/watch ${query}`
+                            }
+                        }
+                    );
+
+                const $ =
+                    cheerio.load(response.data);
+
+                $('a[href]').each((index, element) => {
+                    const href =
+                        $(element).attr('href');
+                    const absolute =
+                        extractSearchResultUrl(href);
+                    const watchUrl =
+                        normalizeYoutubeWatchUrl(absolute);
+
+                    if (!watchUrl) return;
+
+                    const title =
+                        $(element)
+                            .text()
+                            .replace(/\s+/g, ' ')
+                            .trim();
+
+                    links.push({
+                        title,
+                        url: watchUrl
+                    });
+                });
+            } catch (error) {
+                console.log(
+                    `⚠️ Busca YouTube falhou: ${query} (${error.message})`
+                );
+            }
+
+            return null;
+        }
+    );
+
+    return links;
+}
+
+async function searchYoutubeResultsPageLinks(artist, track) {
+    const queries = [
+        `${artist} ${track} oficial`,
+        `${artist} ${track} ao vivo`,
+        `${artist} ${track}`
+    ];
+    const links = [];
+
+    await runConcurrent(
+        queries,
+        2,
+        async query => {
+            try {
+                const response =
+                    await axios.get(
+                        'https://www.youtube.com/results',
+                        {
+                            timeout: REQUEST_TIMEOUT,
+                            headers: HEADERS,
+                            params: {
+                                search_query: query
+                            }
+                        }
+                    );
+
+                const html =
+                    String(response.data || '');
+                const foundIds =
+                    new Set();
+                const videoPattern =
+                    /"videoId":"([_\-a-zA-Z0-9]{11})"/g;
+                let match;
+
+                while ((match = videoPattern.exec(html)) !== null) {
+                    const videoId =
+                        match[1];
+
+                    if (foundIds.has(videoId)) continue;
+                    foundIds.add(videoId);
+
+                    const start =
+                        Math.max(0, match.index - 900);
+                    const end =
+                        Math.min(html.length, match.index + 1600);
+                    const snippet =
+                        html.slice(start, end);
+                    const titleMatch =
+                        snippet.match(/"title":\{"runs":\[\{"text":"([^"]+)"/) ||
+                        snippet.match(/"text":"([^"]+)"/);
+                    const title =
+                        titleMatch
+                            ? titleMatch[1]
+                                .replace(/\\u0026/g, '&')
+                                .replace(/\\"/g, '"')
+                            : `${artist} - ${track}`;
+
+                    links.push({
+                        title,
+                        url:
+                            `https://www.youtube.com/watch?v=${videoId}`
+                    });
+
+                    if (links.length >= 12) break;
+                }
+            } catch (error) {
+                console.log(
+                    `⚠️ Página do YouTube falhou: ${query} (${error.message})`
+                );
+            }
+
+            return null;
+        }
+    );
+
+    return links;
+}
+
+async function resolveYoutubeReference(artist, track) {
+    const duckDuckGoLinks =
+        await searchYoutubeReferenceLinks(artist, track);
+    const youtubePageLinks =
+        await searchYoutubeResultsPageLinks(artist, track);
+    const links =
+        [
+            ...duckDuckGoLinks,
+            ...youtubePageLinks
+        ];
+    const unique =
+        new Map();
+
+    for (const item of links) {
+        const videoId =
+            extractYoutubeVideoId(item.url);
+
+        if (!videoId) continue;
+
+        const score =
+            scoreYoutubeReference(item, artist, track);
+
+        if (
+            !unique.has(videoId) ||
+            unique.get(videoId).score < score
+        ) {
+            unique.set(videoId, {
+                ...item,
+                score
+            });
+        }
+    }
+
+    const best =
+        [...unique.values()]
+            .sort((a, b) => b.score - a.score)[0];
+
+    if (!best || best.score < 55) {
+        console.log(
+            `🎧 YouTube sem match confiável: ${artist} - ${track}`
+        );
+        return null;
+    }
+
+    console.log(
+        `🎧 YouTube referência: ${best.title} (${best.score})`
+    );
+
+    return {
+        url: best.url,
+        source: 'youtube_search',
+        title: best.title,
+        score: Math.round(best.score)
+    };
 }
 
 // ============================================================
@@ -5144,6 +5431,23 @@ app.get(
                 `⚡ CACHE: ${artist} - ${track}`
             );
 
+            if (!cached.referenceUrl) {
+                const reference =
+                    await resolveYoutubeReference(
+                        cached.artist || artist,
+                        cached.title || track
+                    );
+
+                if (reference) {
+                    cached.referenceUrl = reference.url;
+                    cached.referenceSource = reference.source;
+                    cached.referenceTitle = reference.title;
+                    cached.referenceScore = reference.score;
+                    saveSongCache(cacheKey, cached);
+                    await saveGlobalSongCache(artist, track, cached);
+                }
+            }
+
             return res
                 .status(200)
                 .json(cached);
@@ -5237,15 +5541,38 @@ app.get(
                     url:
                         result.url,
 
+                    referenceUrl:
+                        result.referenceUrl ||
+                        '',
+
+                    referenceSource:
+                        result.referenceSource ||
+                        '',
+
                     source:
                         result.source,
 
                     // útil para debug
                     searchScore:
                         Math.round(
-                            result.score
+                    result.score
                         )
                 });
+
+                if (!response.referenceUrl) {
+                    const reference =
+                        await resolveYoutubeReference(
+                            response.artist || artist,
+                            response.title || track
+                        );
+
+                    if (reference) {
+                        response.referenceUrl = reference.url;
+                        response.referenceSource = reference.source;
+                        response.referenceTitle = reference.title;
+                        response.referenceScore = reference.score;
+                    }
+                }
 
                 saveSongCache(
                     cacheKey,
