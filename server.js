@@ -57,14 +57,14 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.1.2';
-const BUNDLED_APP_BUILD = 12;
+const BUNDLED_APP_VERSION = '1.1.4';
+const BUNDLED_APP_BUILD = 14;
 const BUNDLED_APK_URL =
     'https://github.com/Alefexz/cifra_band/releases/latest';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização 1.1.2 disponível com diagnóstico de busca, logs no suporte e notificações melhoradas.';
+    'Atualização 1.1.4 disponível com central de suporte inteligente, conversa no chamado e observabilidade reforçada.';
 const FEEDBACK_TYPES =
-    new Set(['bug', 'wrong_chord', 'question', 'suggestion']);
+    new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
     new Set(['critical', 'high', 'medium', 'low']);
 const SUPPORT_TICKET_STATUSES =
@@ -774,6 +774,73 @@ function sanitizeSupportLogs(value) {
         .filter(item => Object.keys(item).length > 0);
 }
 
+function supportMessage({
+    sender,
+    message,
+    name,
+    uid,
+    kind = 'message'
+}) {
+    return {
+        sender:
+            String(sender || 'system').slice(0, 30),
+        kind:
+            String(kind || 'message').slice(0, 40),
+        message:
+            String(message || '').trim().slice(0, 1200),
+        name:
+            String(name || '').trim().slice(0, 120) || null,
+        uid:
+            String(uid || '').trim().slice(0, 120) || null,
+        created_at:
+            new Date().toISOString()
+    };
+}
+
+async function supportRecipientsForTicket(firestore, ticketUser) {
+    const recipients = new Set();
+    const churchId =
+        String(ticketUser?.church_id || '').trim();
+
+    if (churchId) {
+        const adminsSnapshot =
+            await firestore
+                .collection('users')
+                .where('church_id', '==', churchId)
+                .limit(80)
+                .get();
+
+        adminsSnapshot.docs.forEach(doc => {
+            const userData =
+                doc.data() || {};
+
+            if (doc.id !== ticketUser.uid && userData.is_admin === true) {
+                recipients.add(doc.id);
+            }
+        });
+    }
+
+    for (const email of SUPPORT_OWNER_EMAILS) {
+        try {
+            const ownerSnapshot =
+                await firestore
+                    .collection('users')
+                    .where('email', '==', email)
+                    .limit(5)
+                    .get();
+
+            ownerSnapshot.docs.forEach(doc => recipients.add(doc.id));
+        } catch (error) {
+            console.error(
+                'Falha ao buscar suporte global por email:',
+                error.message
+            );
+        }
+    }
+
+    return [...recipients];
+}
+
 function serializeSupportValue(value) {
     if (value === null || value === undefined) {
         return null;
@@ -866,6 +933,10 @@ app.get(
         const firebaseAdmin = getFirebaseAdmin();
         const status =
             String(req.query.status || 'open').trim();
+        const type =
+            String(req.query.type || 'all').trim();
+        const severity =
+            String(req.query.severity || 'all').trim();
         const limit =
             Math.min(
                 Math.max(parseIntegerEnv(req.query.limit, 50), 1),
@@ -876,6 +947,20 @@ app.get(
             return res.status(400).json({
                 error: 'invalid_support_ticket_status',
                 message: 'Status de ticket inválido.'
+            });
+        }
+
+        if (type !== 'all' && !FEEDBACK_TYPES.has(type)) {
+            return res.status(400).json({
+                error: 'invalid_feedback_type',
+                message: 'Tipo de feedback inválido.'
+            });
+        }
+
+        if (severity !== 'all' && !FEEDBACK_SEVERITIES.has(severity)) {
+            return res.status(400).json({
+                error: 'invalid_feedback_severity',
+                message: 'Prioridade de feedback inválida.'
             });
         }
 
@@ -905,6 +990,12 @@ app.get(
                     }))
                     .filter(ticket =>
                         status === 'all' || ticket.status === status
+                    )
+                    .filter(ticket =>
+                        type === 'all' || ticket.type === type
+                    )
+                    .filter(ticket =>
+                        severity === 'all' || ticket.severity === severity
                     )
                     .sort((a, b) =>
                         String(b.created_at || '').localeCompare(
@@ -981,6 +1072,113 @@ app.get(
             return res.status(500).json({
                 error: 'my_support_tickets_list_failed',
                 message: 'Não consegui carregar seus feedbacks agora.'
+            });
+        }
+    }
+);
+
+app.patch(
+    '/my-support-tickets/:ticketId',
+    authenticateFirebaseUser,
+    rateLimit({
+        name: 'mySupportTicketUpdate',
+        windowMs: SUPPORT_RATE_LIMIT_WINDOW_MS,
+        max: SUPPORT_RATE_LIMIT_MAX
+    }),
+    async (req, res) => {
+        const firebaseAdmin = getFirebaseAdmin();
+        const ticketId =
+            String(req.params.ticketId || '').trim();
+        const status =
+            String(req.body?.status || '').trim();
+
+        if (!ticketId) {
+            return res.status(400).json({
+                error: 'missing_ticket_id',
+                message: 'Informe o ticket.'
+            });
+        }
+
+        if (!['open', 'resolved', 'closed'].includes(status)) {
+            return res.status(400).json({
+                error: 'invalid_support_ticket_status',
+                message: 'Status de ticket inválido.'
+            });
+        }
+
+        if (!firebaseAdmin) {
+            return res.status(503).json({
+                error: 'firebase_admin_unavailable',
+                message: 'Firebase Admin não foi inicializado no servidor.'
+            });
+        }
+
+        try {
+            const firestore =
+                firebaseAdmin.firestore();
+            const ticketRef =
+                firestore
+                    .collection('support_tickets')
+                    .doc(ticketId);
+            const ticketDoc =
+                await ticketRef.get();
+
+            if (!ticketDoc.exists) {
+                return res.status(404).json({
+                    error: 'support_ticket_not_found',
+                    message: 'Feedback não encontrado.'
+                });
+            }
+
+            const ticket =
+                ticketDoc.data() || {};
+            const ownerUid =
+                String(ticket.user?.uid || '').trim();
+
+            if (ownerUid !== req.firebaseUser.uid) {
+                return res.status(403).json({
+                    error: 'support_ticket_forbidden',
+                    message: 'Você só pode alterar seus próprios feedbacks.'
+                });
+            }
+
+            const userName =
+                ticket.user?.name ||
+                req.firebaseUser.name ||
+                req.firebaseUser.email ||
+                'Usuário';
+
+            await ticketRef.update({
+                status,
+                updated_at:
+                    admin.firestore.FieldValue.serverTimestamp(),
+                user_status_updated_at:
+                    admin.firestore.FieldValue.serverTimestamp(),
+                messages:
+                    admin.firestore.FieldValue.arrayUnion(
+                        supportMessage({
+                            sender: 'user',
+                            kind: `user_status_${status}`,
+                            message:
+                                status === 'open'
+                                    ? 'Ainda preciso de ajuda.'
+                                    : 'Problema marcado como resolvido pelo usuário.',
+                            uid: req.firebaseUser.uid,
+                            name: userName
+                        })
+                    )
+            });
+
+            return res.status(200).json({
+                success: true,
+                ticketId,
+                status
+            });
+        } catch (error) {
+            console.error('Falha ao atualizar meu ticket:', error);
+            return res.status(500).json({
+                error: 'my_support_ticket_update_failed',
+                message: 'Não consegui atualizar seu feedback agora.'
             });
         }
     }
@@ -1070,6 +1268,34 @@ app.patch(
                         'Suporte Cifra Band',
                     created_at: admin.firestore.FieldValue.serverTimestamp()
                 };
+                updatePayload.messages =
+                    admin.firestore.FieldValue.arrayUnion(
+                        supportMessage({
+                            sender: 'admin',
+                            kind: 'admin_reply',
+                            message: reply,
+                            uid: req.supportAdmin.uid,
+                            name:
+                                req.firebaseUser.name ||
+                                req.firebaseUser.email ||
+                                'Suporte Cifra Band'
+                        })
+                    );
+            } else if (status !== ticket.status) {
+                updatePayload.messages =
+                    admin.firestore.FieldValue.arrayUnion(
+                        supportMessage({
+                            sender: 'admin',
+                            kind: `status_${status}`,
+                            message:
+                                `Chamado marcado como ${status}.`,
+                            uid: req.supportAdmin.uid,
+                            name:
+                                req.firebaseUser.name ||
+                                req.firebaseUser.email ||
+                                'Suporte Cifra Band'
+                        })
+                    );
             }
 
             await ticketRef.update(updatePayload);
@@ -1211,6 +1437,22 @@ app.post(
 
             const now =
                 admin.firestore.FieldValue.serverTimestamp();
+            const ticketUser = {
+                uid: req.firebaseUser.uid,
+                email:
+                    req.firebaseUser.email ||
+                    userData.email ||
+                    null,
+                name:
+                    userData.name ||
+                    req.firebaseUser.name ||
+                    null,
+                church_id:
+                    userData.church_id ||
+                    null,
+                is_admin:
+                    userData.is_admin === true
+            };
             const ticketRef =
                 await firestore
                     .collection('support_tickets')
@@ -1218,27 +1460,25 @@ app.post(
                         type,
                         severity,
                         message,
+                        messages: [
+                            supportMessage({
+                                sender: 'user',
+                                kind: 'feedback',
+                                message,
+                                uid: req.firebaseUser.uid,
+                                name:
+                                    userData.name ||
+                                    req.firebaseUser.name ||
+                                    req.firebaseUser.email ||
+                                    'Usuário'
+                            })
+                        ],
                         screen: screen || null,
                         status: 'open',
                         source: 'api',
                         created_at: now,
                         updated_at: now,
-                        user: {
-                            uid: req.firebaseUser.uid,
-                            email:
-                                req.firebaseUser.email ||
-                                userData.email ||
-                                null,
-                            name:
-                                userData.name ||
-                                req.firebaseUser.name ||
-                                null,
-                            church_id:
-                                userData.church_id ||
-                                null,
-                            is_admin:
-                                userData.is_admin === true
-                        },
+                        user: ticketUser,
                         app: sanitizeSupportObject(body.app),
                         device: sanitizeSupportObject(body.device),
                         logs: sanitizeSupportLogs(body.logs),
@@ -1255,9 +1495,42 @@ app.post(
                         }
                     });
 
+            let notificationResult = null;
+            try {
+                const recipients =
+                    await supportRecipientsForTicket(
+                        firestore,
+                        ticketUser
+                    );
+
+                notificationResult =
+                    await sendSystemNotificationToUsers(
+                        firebaseAdmin,
+                        firestore,
+                        recipients,
+                        {
+                            title: 'Novo feedback recebido',
+                            body:
+                                `${ticketUser.name || ticketUser.email || 'Usuário'} enviou: ${message.slice(0, 100)}`,
+                            data: {
+                                type: 'support_ticket_created',
+                                ticketId: ticketRef.id,
+                                severity,
+                                feedbackType: type
+                            }
+                        }
+                    );
+            } catch (notificationError) {
+                console.error(
+                    'Falha ao notificar novo feedback:',
+                    notificationError.message
+                );
+            }
+
             return res.status(201).json({
                 success: true,
-                ticketId: ticketRef.id
+                ticketId: ticketRef.id,
+                notification: notificationResult
             });
         } catch (error) {
             console.error('Falha ao registrar feedback:', error);
