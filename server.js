@@ -58,13 +58,13 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.0';
-const BUNDLED_APP_BUILD = 18;
-const BUNDLED_MINIMUM_BUILD = 18;
+const BUNDLED_APP_VERSION = '1.5.2';
+const BUNDLED_APP_BUILD = 20;
+const BUNDLED_MINIMUM_BUILD = 20;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.5.0-build-18.apk';
+    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.5.2-build-20.apk';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização obrigatória 1.5.0: segurança do dono do app, graus e instrumentos mais completos, YouTube em cifras encontradas e Culto Guiado com player minimizável.';
+    'Atualização obrigatória 1.5.2: corrige o salvamento de cifras em setlists, melhora a verificação de atualização e mantém os ajustes de acordes, graus e histórico.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
