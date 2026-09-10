@@ -7,12 +7,21 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const admin = require('firebase-admin');
+const { createUpdatePushWorker, deviceId, parseRegistration } = require('./lib/update-push');
 const { analyzeChordContent, extractChordContent: extractCompleteChordContent, extractWordpressChordContent, elementText } = require('./lib/chord-content');
 
 const app = express();
 
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
+
+const updatePushWorker = createUpdatePushWorker({ getAdmin: getFirebaseAdmin, getVersion: getAppVersionPayload });
+app.use((req, res, next) => {
+    res.on('finish', () => {
+        if (res.statusCode < 400 && req.method !== 'OPTIONS') updatePushWorker.kick();
+    });
+    next();
+});
 
 // FIX: sem isso, qualquer chamada vinda de um app Flutter Web (ou de
 // qualquer origem diferente do próprio servidor) falha por CORS antes
@@ -59,13 +68,13 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.3';
-const BUNDLED_APP_BUILD = 21;
+const BUNDLED_APP_VERSION = '1.5.4';
+const BUNDLED_APP_BUILD = 22;
 const BUNDLED_MINIMUM_BUILD = 21;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.3/cifra-band-1.5.3-build-21.apk';
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.4/cifra-band-1.5.4-build-22.apk';
 const BUNDLED_RELEASE_NOTES =
-    'Correção obrigatória: salvar cifras em setlists próprias e compartilhadas, recuperar letras ausentes, preservar tons menores e capo e melhorar o carregamento dos repertórios.';
+    'Avisos de atualização por push: o aparelho registra sua versão para receber as próximas novidades mesmo com o app fechado. Mantém as correções de cifras e setlists.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
@@ -175,7 +184,7 @@ function getAppVersionPayload() {
                 BUNDLED_MINIMUM_BUILD
             ),
         updateRequired:
-            parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false) ||
+            (!useBundledVersion && parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false)) ||
             BUNDLED_MINIMUM_BUILD >= BUNDLED_APP_BUILD,
         apkUrl: useBundledApk ? BUNDLED_APK_URL : configuredApkUrl,
         releaseNotes: useBundledVersion
@@ -288,6 +297,23 @@ async function authenticateFirebaseUser(req, res, next) {
         });
     }
 }
+
+app.post('/devices/register', authenticateFirebaseUser,
+    rateLimit({ name: 'registerDevice', windowMs: 60 * 60 * 1000, max: 30 }),
+    async (req, res) => {
+        const registration = parseRegistration(req.body);
+        if (!registration) return res.status(400).json({ error: 'invalid_device_registration' });
+        try {
+            await getFirebaseAdmin().firestore().collection('app_devices')
+                .doc(deviceId(registration.token)).set({
+                    ...registration, uid: req.firebaseUser.uid, enabled: true, registeredAt: Date.now(),
+                }, { merge: true });
+            return res.json({ registered: true });
+        } catch (error) {
+            console.error('Device registration failed:', error.code || error.message);
+            return res.status(503).json({ error: 'device_registration_unavailable' });
+        }
+    });
 
 function clientIdentity(req) {
     const uid = req.firebaseUser?.uid;
@@ -5591,4 +5617,4 @@ if (require.main === module) app.listen(
     }
 );
 
-module.exports = { app, findSong, inspectSongUrl, isSearchResultSafeForRequest };
+module.exports = { app, findSong, inspectSongUrl, isSearchResultSafeForRequest, getAppVersionPayload };
