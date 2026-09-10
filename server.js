@@ -7,6 +7,7 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const admin = require('firebase-admin');
+const { analyzeChordContent, extractChordContent: extractCompleteChordContent, extractWordpressChordContent, elementText } = require('./lib/chord-content');
 
 const app = express();
 
@@ -58,13 +59,13 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.2';
-const BUNDLED_APP_BUILD = 20;
-const BUNDLED_MINIMUM_BUILD = 20;
+const BUNDLED_APP_VERSION = '1.5.3';
+const BUNDLED_APP_BUILD = 21;
+const BUNDLED_MINIMUM_BUILD = 21;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/raw/main/releases/cifra-band-1.5.2-build-20.apk';
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.3/cifra-band-1.5.3-build-21.apk';
 const BUNDLED_RELEASE_NOTES =
-    'Atualização obrigatória 1.5.2: corrige o salvamento de cifras em setlists, melhora a verificação de atualização e mantém os ajustes de acordes, graus e histórico.';
+    'Correção obrigatória: salvar cifras em setlists próprias e compartilhadas, recuperar letras ausentes, preservar tons menores e capo e melhorar o carregamento dos repertórios.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
@@ -2410,6 +2411,7 @@ function cleanCache(map, ttl, maxItems = MAX_CACHE_ITEMS) {
 }
 
 function saveSongCache(key, data) {
+    if (!analyzeChordContent(data.content).usable) return;
     cleanCache(songCache, CACHE_TTL);
     songCache.set(key, {
         data,
@@ -2422,7 +2424,7 @@ function getSongCache(key) {
 
     if (!item) return null;
 
-    if (Date.now() - item.createdAt > CACHE_TTL) {
+    if (Date.now() - item.createdAt > CACHE_TTL || !analyzeChordContent(item.data.content).usable) {
         songCache.delete(key);
         return null;
     }
@@ -2603,13 +2605,6 @@ async function getGlobalSongCache(artist, track) {
             console.warn(
                 `Cache global ignorado por baixa correspondência: ${artist} - ${track} -> ${response.title}`
             );
-
-            await snapshot.ref.delete().catch(error => {
-                console.warn(
-                    'Falha ao remover cache global inválido:',
-                    error.message
-                );
-            });
 
             return null;
         }
@@ -3267,15 +3262,13 @@ function cleanAlternativeLinkTitle(rawTitle, url) {
 
 function extractAlternativeProviderContent($, provider) {
     if (provider.source === 'cifras_gospel_online') {
+        const complete = extractWordpressChordContent($);
+        if (complete) return complete;
         const parts = [];
 
         $('pre.wp-block-verse, article pre, main pre, pre').each(
             (index, element) => {
-                const text =
-                    $(element)
-                        .text()
-                        .replace(/\u00a0/g, ' ')
-                        .trim();
+                const text = elementText($, element);
 
                 const normalized =
                     normalizeText(text);
@@ -3381,54 +3374,7 @@ function extractAlternativeProviderMetadata(
 // ============================================================
 
 function extractChordContent($) {
-    const candidates = [];
-
-    $('pre').each((index, element) => {
-        const text = $(element).text();
-
-        if (text && text.trim().length > 0) {
-            candidates.push(text);
-        }
-    });
-
-    $('main pre').each((index, element) => {
-        const text = $(element).text();
-
-        if (text && text.trim().length > 0) {
-            candidates.push(text);
-        }
-    });
-
-    $('article pre').each((index, element) => {
-        const text = $(element).text();
-
-        if (text && text.trim().length > 0) {
-            candidates.push(text);
-        }
-    });
-
-    // Alguns layouts podem colocar a cifra em containers
-    $('[class*="cifra"]').each((index, element) => {
-        const text = $(element).text();
-
-        if (
-            text &&
-            text.trim().length > 100 &&
-            text.length < 100000
-        ) {
-            candidates.push(text);
-        }
-    });
-
-    if (!candidates.length) {
-        return '';
-    }
-
-    candidates.sort(
-        (a, b) => b.length - a.length
-    );
-
-    return candidates[0].trim();
+    return extractCompleteChordContent($);
 }
 
 // ============================================================
@@ -3436,28 +3382,7 @@ function extractChordContent($) {
 // ============================================================
 
 function looksLikeChordContent(content) {
-    if (!content) return false;
-
-    const text = content.trim();
-
-    if (text.length < 80) {
-        return false;
-    }
-
-    // Acordes comuns
-    const chordMatches = text.match(
-        /\b[A-G](?:#|b)?(?:m|maj|min|dim|aug|sus|add|M)?\d*(?:\/[A-G](?:#|b)?)?\b/g
-    );
-
-    const chordCount =
-        chordMatches ? chordMatches.length : 0;
-
-    // Tablatura também conta
-    const hasTab =
-        /E\|[-0-9hHpPbB\/\\|]+/i.test(text) ||
-        /B\|[-0-9hHpPbB\/\\|]+/i.test(text);
-
-    return chordCount >= 4 || hasTab;
+    return analyzeChordContent(content).usable;
 }
 
 // ============================================================
@@ -4901,7 +4826,7 @@ function buildSongSearchError({
         no_reliable_match:
             'Encontrei resultados parecidos, mas nenhum bateu com segurança com esse artista e essa música.',
         no_published_chord:
-            'Não encontrei cifra publicada para esse artista e essa música nas fontes atuais.',
+            'Não encontrei uma cifra confiável com letra e acordes para essa versão nas fontes consultadas. Isso não confirma que ela não exista. Tente outra versão ou reporte o problema.',
         search_failed:
             'A busca falhou antes de terminar. Tente novamente em alguns instantes.'
     };
@@ -5657,7 +5582,7 @@ app.get(
 // SERVER
 // ============================================================
 
-app.listen(
+if (require.main === module) app.listen(
     port,
     () => {
         console.log(
@@ -5665,3 +5590,5 @@ app.listen(
         );
     }
 );
+
+module.exports = { app, findSong, inspectSongUrl, isSearchResultSafeForRequest };
