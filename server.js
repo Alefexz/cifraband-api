@@ -8,6 +8,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const admin = require('firebase-admin');
 const { createUpdatePushWorker, deviceId, parseRegistration } = require('./lib/update-push');
+const { createCatalogSearch } = require('./lib/catalog-search');
 const { analyzeChordContent, extractChordContent: extractCompleteChordContent, extractWordpressChordContent, elementText } = require('./lib/chord-content');
 
 const app = express();
@@ -16,6 +17,11 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
 
 const updatePushWorker = createUpdatePushWorker({ getAdmin: getFirebaseAdmin, getVersion: getAppVersionPayload });
+const searchGlobalCatalog = createCatalogSearch({ load: async () => {
+    const snapshot = await getFirebaseAdmin().firestore().collection('global_cifras')
+        .select('title', 'artist', 'content', 'url').limit(1000).get();
+    return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+} });
 app.use((req, res, next) => {
     res.on('finish', () => {
         if (res.statusCode < 400 && req.method !== 'OPTIONS') updatePushWorker.kick();
@@ -68,13 +74,13 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.4';
-const BUNDLED_APP_BUILD = 22;
+const BUNDLED_APP_VERSION = '1.5.5';
+const BUNDLED_APP_BUILD = 23;
 const BUNDLED_MINIMUM_BUILD = 21;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.4/cifra-band-1.5.4-build-22.apk';
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.5/cifra-band-1.5.5-build-23.apk';
 const BUNDLED_RELEASE_NOTES =
-    'Avisos de atualização por push: o aparelho registra sua versão para receber as próximas novidades mesmo com o app fechado. Mantém as correções de cifras e setlists.';
+    'Pesquisa melhorada: Deezer e Apple, resultados relevantes primeiro, pequenos erros de digitação, hino 545 e busca por trechos nas cifras do banco global. Mantém artistas, álbuns e atualizações pelo app.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
@@ -297,6 +303,20 @@ async function authenticateFirebaseUser(req, res, next) {
         });
     }
 }
+
+app.get('/catalog-search', authenticateFirebaseUser,
+    rateLimit({ name: 'catalogSearch', windowMs: 60 * 1000, max: 30 }),
+    async (req, res) => {
+        if (typeof req.query.q !== 'string' || req.query.q.trim().length < 2 || req.query.q.length > 120) {
+            return res.status(400).json({ error: 'invalid_query' });
+        }
+        try {
+            return res.json(await searchGlobalCatalog(req.query.q));
+        } catch (error) {
+            console.error('Catalog search unavailable:', error.code || error.message);
+            return res.status(503).json({ error: 'catalog_unavailable' });
+        }
+    });
 
 app.post('/devices/register', authenticateFirebaseUser,
     rateLimit({ name: 'registerDevice', windowMs: 60 * 60 * 1000, max: 30 }),
