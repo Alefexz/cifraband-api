@@ -9,6 +9,7 @@ const cheerio = require('cheerio');
 const admin = require('firebase-admin');
 const { createUpdatePushWorker, deviceId, parseRegistration } = require('./lib/update-push');
 const { createCatalogSearch } = require('./lib/catalog-search');
+const { mountMemberActions } = require('./lib/member-actions');
 const { analyzeChordContent, extractChordContent: extractCompleteChordContent, extractWordpressChordContent, elementText } = require('./lib/chord-content');
 
 const app = express();
@@ -74,25 +75,23 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.5';
-const BUNDLED_APP_BUILD = 23;
-const BUNDLED_MINIMUM_BUILD = 21;
+const BUNDLED_APP_VERSION = '1.5.6';
+const BUNDLED_APP_BUILD = 24;
+const BUNDLED_MINIMUM_BUILD = 24;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.5/cifra-band-1.5.5-build-23.apk';
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.6/cifra-band-1.5.6-build-24.apk';
+const BUNDLED_APK_SHA256 = '344e3374b2c4d277dc4856cdad55e876b569d361e40cd847f3a2e2041e2ad234';
+const BUNDLED_APK_BYTES = 67396066;
 const BUNDLED_RELEASE_NOTES =
-    'Pesquisa melhorada: Deezer e Apple, resultados relevantes primeiro, pequenos erros de digitação, hino 545 e busca por trechos nas cifras do banco global. Mantém artistas, álbuns e atualizações pelo app.';
+    'Atualização de segurança: pesquisa por artistas com erros de digitação, correção de cifras de duplas, novo aviso de busca, acordes revisados, setlists protegidas, biblioteca oficial e melhorias nas notificações e no download de atualizações.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
     new Set(['critical', 'high', 'medium', 'low']);
 const SUPPORT_TICKET_STATUSES =
     new Set(['open', 'resolved', 'closed']);
-const PRODUCT_OWNER_EMAIL =
-    String(process.env.PRODUCT_OWNER_EMAIL || 'alef08052006@gmail.com')
-        .trim()
-        .toLowerCase();
-const SUPPORT_OWNER_EMAILS =
-    new Set(PRODUCT_OWNER_EMAIL ? [PRODUCT_OWNER_EMAIL] : []);
+// Verified against Firebase Authentication, never a client-editable profile.
+const PRODUCT_OWNER_UID = 'lMMSvaliRoZQ3C0ceHBOWUVor2g2';
 
 // ============================================================
 // CACHE
@@ -179,6 +178,8 @@ function getAppVersionPayload() {
             configuredApkLooksOld
         );
 
+    const apkUrl = useBundledApk ? BUNDLED_APK_URL : configuredApkUrl;
+    const bundledArtifact = latestBuild === BUNDLED_APP_BUILD && apkUrl === BUNDLED_APK_URL;
     return {
         latestVersion: useBundledVersion
             ? BUNDLED_APP_VERSION
@@ -191,8 +192,9 @@ function getAppVersionPayload() {
             ),
         updateRequired:
             (!useBundledVersion && parseBooleanEnv(process.env.APP_UPDATE_REQUIRED, false)) ||
-            BUNDLED_MINIMUM_BUILD >= BUNDLED_APP_BUILD,
-        apkUrl: useBundledApk ? BUNDLED_APK_URL : configuredApkUrl,
+            (latestBuild === BUNDLED_APP_BUILD && BUNDLED_MINIMUM_BUILD >= BUNDLED_APP_BUILD),
+        apkUrl,
+        ...(bundledArtifact ? { apkSha256: BUNDLED_APK_SHA256, apkBytes: BUNDLED_APK_BYTES } : {}),
         releaseNotes: useBundledVersion
             ? BUNDLED_RELEASE_NOTES
             : process.env.APP_RELEASE_NOTES || BUNDLED_RELEASE_NOTES,
@@ -304,6 +306,9 @@ async function authenticateFirebaseUser(req, res, next) {
     }
 }
 
+mountMemberActions(app, { authenticate: authenticateFirebaseUser,
+    limit: rateLimit({ name: 'memberActions', windowMs: 60000, max: 40 }), getAdmin: getFirebaseAdmin });
+
 app.get('/catalog-search', authenticateFirebaseUser,
     rateLimit({ name: 'catalogSearch', windowMs: 60 * 1000, max: 30 }),
     async (req, res) => {
@@ -334,6 +339,24 @@ app.post('/devices/register', authenticateFirebaseUser,
             return res.status(503).json({ error: 'device_registration_unavailable' });
         }
     });
+
+app.post('/devices/unregister', authenticateFirebaseUser, async (req, res) => {
+    if (typeof req.body.token !== 'string' || req.body.token.length > 4096) return res.sendStatus(400);
+    try {
+        const db = getFirebaseAdmin().firestore();
+        const ref = db.collection('app_devices').doc(deviceId(req.body.token));
+        await db.runTransaction(async tx => {
+            const doc = await tx.get(ref);
+            if (doc.exists && doc.data().uid === req.firebaseUser.uid) tx.update(ref, { enabled: false });
+        });
+        res.json({ unregistered: true });
+    } catch (_) { res.sendStatus(503); }
+});
+
+async function registeredTokensForUid(db, uid) {
+    const devices = await db.collection('app_devices').where('uid', '==', uid).get();
+    return devices.docs.filter(doc => doc.data().enabled !== false).map(doc => doc.data().token).filter(Boolean);
+}
 
 function clientIdentity(req) {
     const uid = req.firebaseUser?.uid;
@@ -661,17 +684,7 @@ async function sendSystemNotificationToUsers(
         const userDoc = userDocs[index];
         if (!userDoc.exists) continue;
 
-        const userData =
-            userDoc.data() || {};
-        const tokens = [];
-
-        if (Array.isArray(userData.fcmTokens)) {
-            tokens.push(...userData.fcmTokens);
-        }
-
-        if (typeof userData.fcmToken === 'string') {
-            tokens.push(userData.fcmToken);
-        }
+        const tokens = await registeredTokensForUid(firestore, targetUserIds[index]);
 
         for (const token of tokens) {
             const cleanToken =
@@ -771,7 +784,7 @@ async function sendSystemNotificationToUsers(
 }
 
 function sanitizeSupportValue(value, depth = 0) {
-    if (depth > 3 || value === undefined) {
+    if (depth > 6 || value === undefined) {
         return null;
     }
 
@@ -857,27 +870,7 @@ function supportMessage({
 }
 
 async function supportRecipientsForTicket(firestore, ticketUser) {
-    const recipients = new Set();
-
-    for (const email of SUPPORT_OWNER_EMAILS) {
-        try {
-            const ownerSnapshot =
-                await firestore
-                    .collection('users')
-                    .where('email', '==', email)
-                    .limit(5)
-                    .get();
-
-            ownerSnapshot.docs.forEach(doc => recipients.add(doc.id));
-        } catch (error) {
-            console.error(
-                'Falha ao buscar suporte global por email:',
-                error.message
-            );
-        }
-    }
-
-    return [...recipients];
+    return [PRODUCT_OWNER_UID];
 }
 
 function serializeSupportValue(value) {
@@ -926,12 +919,8 @@ async function loadSupportAdmin(req, res, next) {
             userDoc.data() || {};
         const churchId =
             String(userData.church_id || '').trim();
-        const email =
-            String(req.firebaseUser.email || userData.email || '')
-                .trim()
-                .toLowerCase();
         const isGlobalSupportOwner =
-            SUPPORT_OWNER_EMAILS.has(email);
+            req.firebaseUser.uid === PRODUCT_OWNER_UID;
 
         if (!isGlobalSupportOwner) {
             return res.status(403).json({
@@ -1351,10 +1340,7 @@ app.patch(
                                 [ticketOwnerUid],
                                 {
                                     title: 'Suporte respondeu',
-                                    body:
-                                        reply.length > 120
-                                            ? `${reply.slice(0, 117)}...`
-                                            : reply,
+                                    body: 'Seu chamado recebeu uma resposta. Abra o app para consultar.',
                                     data: {
                                         type: 'support_reply',
                                         ticketId,
@@ -1665,18 +1651,7 @@ app.post(
                     continue;
                 }
 
-                const userData =
-                    userDoc.data() || {};
-
-                const tokens = [];
-
-                if (Array.isArray(userData.fcmTokens)) {
-                    tokens.push(...userData.fcmTokens);
-                }
-
-                if (typeof userData.fcmToken === 'string') {
-                    tokens.push(userData.fcmToken);
-                }
+                const tokens = await registeredTokensForUid(firestore, targetUserIds[index]);
 
                 for (const token of tokens) {
                     const cleanToken =
@@ -2146,6 +2121,9 @@ function generateArtistSlugs(artist) {
         }
     }
 
+    // Duos may omit the conjunction in their canonical URL. Keep the full
+    // identity before individual-name guesses; content validation still applies.
+    add(normalized.replace(/\be\b/g, ' '));
     for (const variant of generateArtistNameVariants(original)) {
         add(formatArtistSlug(variant));
         add(normalizeText(variant));
@@ -2964,6 +2942,8 @@ async function searchYoutubeResultsPageLinks(artist, track) {
 }
 
 async function resolveYoutubeReference(artist, track) {
+    // Guided YouTube remains deferred to 2.0; it must not delay opening a chart.
+    if (process.env.ENABLE_YOUTUBE_REFERENCES !== 'true') return null;
     const duckDuckGoLinks =
         await searchYoutubeReferenceLinks(artist, track);
     const youtubePageLinks =
