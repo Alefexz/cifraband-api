@@ -75,15 +75,15 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.8';
-const BUNDLED_APP_BUILD = 26;
-const BUNDLED_MINIMUM_BUILD = 25;
+const BUNDLED_APP_VERSION = '1.5.9';
+const BUNDLED_APP_BUILD = 27;
+const BUNDLED_MINIMUM_BUILD = 27;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.8/cifra-band-1.5.8-build-26.apk';
-const BUNDLED_APK_SHA256 = 'c9837b6cbcee4e8a744cd0e4eff17611f6c4801ac597f0f381725e0371135ff1';
-const BUNDLED_APK_BYTES = 67428662;
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.9/cifra-band-1.5.9-build-27.apk';
+const BUNDLED_APK_SHA256 = '8051b48063c9e91923e7cad8f680f9f4fe7559c7be2fcadca86125722dbde8e1';
+const BUNDLED_APK_BYTES = 67428886;
 const BUNDLED_RELEASE_NOTES =
-    'Novo botão + na cifra para adicionar a uma setlist. Baixe a setlist inteira pelo menu, reaproveitando cifras já salvas, e abra sua cópia offline. Topo da cifra mais limpo, com opções organizadas nas configurações.';
+    'Correção obrigatória: contagem das setlists atualiza automaticamente. Tom Real e atalhos da cifra restaurados no topo; reportar problema fica apenas nas configurações. Mantidos o botão + e o download offline.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
