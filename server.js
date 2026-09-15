@@ -75,15 +75,15 @@ const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
 
-const BUNDLED_APP_VERSION = '1.5.7';
-const BUNDLED_APP_BUILD = 25;
+const BUNDLED_APP_VERSION = '1.5.8';
+const BUNDLED_APP_BUILD = 26;
 const BUNDLED_MINIMUM_BUILD = 25;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.7/cifra-band-1.5.7-build-25.apk';
-const BUNDLED_APK_SHA256 = '8c17637fbe1aeb5d10e6ae54582deaae6e6aa5bc78ee3924c3ceb53efed95935';
-const BUNDLED_APK_BYTES = 67412454;
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.8/cifra-band-1.5.8-build-26.apk';
+const BUNDLED_APK_SHA256 = 'c9837b6cbcee4e8a744cd0e4eff17611f6c4801ac597f0f381725e0371135ff1';
+const BUNDLED_APK_BYTES = 67428662;
 const BUNDLED_RELEASE_NOTES =
-    'Correção dos diagramas: violão com grid proporcional, pestana e marcações alinhadas; teclado com notas dentro dos círculos; modal rolável. Mantém a correção das setlists. Atualização obrigatória para corrigir os erros da versão anterior.';
+    'Novo botão + na cifra para adicionar a uma setlist. Baixe a setlist inteira pelo menu, reaproveitando cifras já salvas, e abra sua cópia offline. Topo da cifra mais limpo, com opções organizadas nas configurações.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
