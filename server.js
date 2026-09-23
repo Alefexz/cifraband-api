@@ -103,15 +103,15 @@ const enrichYoutubeReference = createReferenceEnricher({
     onError: error => console.warn('YouTube background:', error.message)
 });
 
-const BUNDLED_APP_VERSION = '1.5.9';
-const BUNDLED_APP_BUILD = 27;
+const BUNDLED_APP_VERSION = '1.6.0';
+const BUNDLED_APP_BUILD = 28;
 const BUNDLED_MINIMUM_BUILD = 27;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.5.9/cifra-band-1.5.9-build-27.apk';
-const BUNDLED_APK_SHA256 = '8051b48063c9e91923e7cad8f680f9f4fe7559c7be2fcadca86125722dbde8e1';
-const BUNDLED_APK_BYTES = 67428886;
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.0/cifra-band-1.6.0-build-28.apk';
+const BUNDLED_APK_SHA256 = '687579b3b35b5053653fe7a9497da2b6c22b9d39b587f08db63a86aab2525949';
+const BUNDLED_APK_BYTES = 68019046;
 const BUNDLED_RELEASE_NOTES =
-    'Correção obrigatória: contagem das setlists atualiza automaticamente. Tom Real e atalhos da cifra restaurados no topo; reportar problema fica apenas nas configurações. Mantidos o botão + e o download offline.';
+    'Central de ensaios com preparação por música e integrante. Correções de acordes com capotraste, downloads offline, favoritos por conta e compartilhamento. Exclusão de conta no perfil e melhorias de estabilidade e atualização.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
