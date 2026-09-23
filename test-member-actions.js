@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { scheduleMutation } = require('./lib/member-actions');
+const { mountMemberActions } = require('./lib/member-actions');
 const profile = {church_id: 'church', name: 'Musico', is_admin: false};
 const schedule = {church_id: 'church', team_assignments: [
   {uid: 'a', role: 'Voz', status: 'pending'}, {uid: 'b', role: 'Teclado', status: 'pending'}
@@ -35,4 +36,41 @@ test('invalid vote, role and missing song fail explicitly', () => {
   for (const body of [{action: 'respond', role: 'Teclado', status: 'accepted'}, {action: 'vote', vote: 'hack'}, {action: 'suggest', song: {title: 'Vazia'}}]) {
     assert.throws(() => scheduleMutation(schedule, profile, 'a', body, 1));
   }
+});
+
+test('contact picker uses caller friendships only and returns no private fields', async () => {
+  const records = {
+    owner: { friends: ['same', 'cross', 'cross', '../unsafe'] },
+    same: { name: 'Same church', church_id: 'church', email: 'private', roles: ['Voz'] },
+    cross: { name: 'Other church', church_id: 'other', friends: ['secret'], fcmTokens: ['private'] },
+    stranger: { name: 'Not a friend', email: 'private' },
+  };
+  const snapshot = id => ({ id, exists: !!records[id], data: () => records[id] });
+  const db = {
+    collection: name => {
+      assert.equal(name, 'users');
+      return { doc: id => ({ id, get: async () => snapshot(id) }) };
+    },
+    getAll: async (...args) => {
+      assert.deepEqual(args.pop(), { fieldMask: ['name'] });
+      assert.deepEqual(args.map(ref => ref.id), ['same', 'cross']);
+      return args.map(ref => snapshot(ref.id));
+    },
+  };
+  const authenticate = () => {};
+  const limit = () => {};
+  let handler;
+  mountMemberActions({ post: (path, ...handlers) => {
+    if (path === '/members/contacts') {
+      assert.equal(handlers[0], authenticate);
+      assert.equal(handlers[1], limit);
+      handler = handlers[2];
+    }
+  } }, { authenticate, limit, getAdmin: () => ({ firestore: () => db }) });
+  let result;
+  await handler({ firebaseUser: { uid: 'owner' }, body: { uid: 'stranger', ids: ['stranger'] } },
+    { json: data => { result = data; } });
+  assert.deepEqual(result, { contacts: [
+    { id: 'same', name: 'Same church' }, { id: 'cross', name: 'Other church' },
+  ] });
 });

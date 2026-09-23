@@ -10,6 +10,9 @@ const admin = require('firebase-admin');
 const { createUpdatePushWorker, deviceId, parseRegistration } = require('./lib/update-push');
 const { createCatalogSearch } = require('./lib/catalog-search');
 const { mountMemberActions } = require('./lib/member-actions');
+const { createAuthenticator } = require('./lib/firebase-auth');
+const { createAccountDeletionService, mountAccountDeletion } = require('./lib/account-deletion');
+const { createReferenceEnricher, sendSongWithReference } = require('./lib/youtube-background');
 const { analyzeChordContent, extractChordContent: extractCompleteChordContent, extractWordpressChordContent, elementText } = require('./lib/chord-content');
 
 const app = express();
@@ -74,6 +77,31 @@ const FEEDBACK_RATE_LIMIT_MAX = 8;
 const SUPPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SUPPORT_RATE_LIMIT_MAX = 60;
 const rateLimitBuckets = new Map();
+
+const enrichYoutubeReference = createReferenceEnricher({
+    resolve: resolveYoutubeReference,
+    persist: async ({ key, artist, track, song }, reference) => {
+        const fields = { referenceUrl: reference.url, referenceSource: reference.source,
+            referenceTitle: reference.title, referenceScore: reference.score };
+        const firebaseAdmin = getFirebaseAdmin();
+        if (firebaseAdmin) {
+            const db = firebaseAdmin.firestore();
+            const ref = db.collection('global_cifras').doc(buildGlobalCifraId(artist, track));
+            await db.runTransaction(async tx => {
+                const snapshot = await tx.get(ref);
+                const current = snapshot.data();
+                if (current && current.content === song.content && !current.referenceUrl) {
+                    tx.update(ref, fields);
+                }
+            });
+        }
+        const current = getSongCache(key);
+        if (current && current.content === song.content && !current.referenceUrl) {
+            saveSongCache(key, { ...current, ...fields });
+        }
+    },
+    onError: error => console.warn('YouTube background:', error.message)
+});
 
 const BUNDLED_APP_VERSION = '1.5.9';
 const BUNDLED_APP_BUILD = 27;
@@ -264,46 +292,13 @@ function getFirebaseAdmin() {
     }
 }
 
-async function authenticateFirebaseUser(req, res, next) {
-    const authHeader =
-        req.headers.authorization || '';
-
-    const match =
-        String(authHeader).match(/^Bearer\s+(.+)$/i);
-
-    if (!match) {
-        return res.status(401).json({
-            error: 'missing_auth_token',
-            message: 'Envie o ID token do Firebase no header Authorization.'
-        });
-    }
-
-    const firebaseAdmin = getFirebaseAdmin();
-
-    if (!firebaseAdmin) {
-        return res.status(503).json({
-            error: 'firebase_admin_unavailable',
-            message:
-                'Firebase Admin não foi inicializado no servidor.',
-            detail:
-                firebaseAdminInitError?.message ||
-                'Credencial ausente ou inválida.'
-        });
-    }
-
-    try {
-        req.firebaseUser =
-            await firebaseAdmin
-                .auth()
-                .verifyIdToken(match[1]);
-
-        return next();
-    } catch (error) {
-        return res.status(401).json({
-            error: 'invalid_auth_token',
-            message: 'ID token do Firebase inválido ou expirado.'
-        });
-    }
+const authenticateFirebaseUser = createAuthenticator(getFirebaseAdmin);
+const accountDeletion = createAccountDeletionService({getAdmin: getFirebaseAdmin});
+mountAccountDeletion(app, {service: accountDeletion, authenticate: authenticateFirebaseUser,
+    limit: rateLimit({name: 'accountDeletion', windowMs: 60_000, max: 30})});
+if (require.main === module) {
+    accountDeletion.kick();
+    setInterval(() => accountDeletion.kick(), 60_000).unref();
 }
 
 mountMemberActions(app, { authenticate: authenticateFirebaseUser,
@@ -332,6 +327,7 @@ app.post('/devices/register', authenticateFirebaseUser,
             await getFirebaseAdmin().firestore().collection('app_devices')
                 .doc(deviceId(registration.token)).set({
                     ...registration, uid: req.firebaseUser.uid, enabled: true, registeredAt: Date.now(),
+                    distribution: registration.distribution || 'direct',
                 }, { merge: true });
             return res.json({ registered: true });
         } catch (error) {
@@ -2636,24 +2632,8 @@ async function getGlobalSongCache(artist, track) {
         if (
             response.originalKey !== (cached.originalKey || 'C') ||
             response.shapeKey !== (cached.shapeKey || '') ||
-            response.capo !== (cached.capo || '') ||
-            !response.referenceUrl
+            response.capo !== (cached.capo || '')
         ) {
-            if (!response.referenceUrl) {
-                const reference =
-                    await resolveYoutubeReference(
-                        response.artist || artist,
-                        response.title || track
-                    );
-
-                if (reference) {
-                    response.referenceUrl = reference.url;
-                    response.referenceSource = reference.source;
-                    response.referenceTitle = reference.title;
-                    response.referenceScore = reference.score;
-                }
-            }
-
             saveGlobalSongCache(artist, track, response);
         }
 
@@ -5336,26 +5316,8 @@ app.get(
                 `⚡ CACHE: ${artist} - ${track}`
             );
 
-            if (!cached.referenceUrl) {
-                const reference =
-                    await resolveYoutubeReference(
-                        cached.artist || artist,
-                        cached.title || track
-                    );
-
-                if (reference) {
-                    cached.referenceUrl = reference.url;
-                    cached.referenceSource = reference.source;
-                    cached.referenceTitle = reference.title;
-                    cached.referenceScore = reference.score;
-                    saveSongCache(cacheKey, cached);
-                    await saveGlobalSongCache(artist, track, cached);
-                }
-            }
-
-            return res
-                .status(200)
-                .json(cached);
+            return sendSongWithReference(res, cached,
+                { key: cacheKey, artist, track }, enrichYoutubeReference);
         }
 
         const globalCached =
@@ -5369,9 +5331,8 @@ app.get(
                 `⚡ CACHE GLOBAL: ${artist} - ${track}`
             );
 
-            return res
-                .status(200)
-                .json(globalCached);
+            return sendSongWithReference(res, globalCached,
+                { key: cacheKey, artist, track }, enrichYoutubeReference);
         }
 
         // ====================================================
@@ -5387,9 +5348,8 @@ app.get(
                         cacheKey
                     );
 
-                return res
-                    .status(200)
-                    .json(result);
+                return sendSongWithReference(res, result,
+                    { key: cacheKey, artist, track }, enrichYoutubeReference);
             } catch (error) {
                 const payload =
                     searchErrorResponse(
@@ -5463,21 +5423,6 @@ app.get(
                     result.score
                         )
                 });
-
-                if (!response.referenceUrl) {
-                    const reference =
-                        await resolveYoutubeReference(
-                            response.artist || artist,
-                            response.title || track
-                        );
-
-                    if (reference) {
-                        response.referenceUrl = reference.url;
-                        response.referenceSource = reference.source;
-                        response.referenceTitle = reference.title;
-                        response.referenceScore = reference.score;
-                    }
-                }
 
                 saveSongCache(
                     cacheKey,
@@ -5553,9 +5498,8 @@ app.get(
                 '══════════════════════════════════════'
             );
 
-            return res
-                .status(200)
-                .json(result);
+            return sendSongWithReference(res, result,
+                { key: cacheKey, artist, track }, enrichYoutubeReference);
 
         } catch (error) {
             console.log('');

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Excluir conta | Cifra Band</title><link rel="stylesheet" href="/account-deletion.css"></head>
+<body><main><header><span class="brand">CB</span><strong>Cifra Band</strong></header>
+<h1>Excluir conta e dados</h1>
+<p>Voce pode solicitar a exclusao aqui, mesmo sem o aplicativo instalado, ou no app em Perfil → Excluir conta e dados.</p>
+<h2>O que sera removido</h2><p>Conta de acesso, perfil, tokens de notificacao, tickets, dados privados e subcolecoes, setlists pessoais e contribuicoes identificadas em dados compartilhados. Os dados dos demais integrantes nao serao apagados. Se voce administra um ministerio com outras pessoas, escolha um sucessor.</p>
+<p>A solicitacao bloqueia novos acessos e a limpeza e processada pelo servidor. Se houver interrupcao, sera retomada na proxima ativacao do servico. O protocolo permite verificar a conclusao. Nao ha prazo garantido durante indisponibilidade.</p>
+<p>Protocolo e bloqueio tecnico minimo sao mantidos por 30 dias apos a conclusao. Telemetria ja enviada e backups seguem as retencoes configuradas nos provedores; nao sao apagados por esta rotina. Dados offline de outro aparelho exigem limpeza nesse aparelho ou desinstalacao. Esta pagina nao substitui a politica de privacidade.</p>
+<form id="login"><h2>Confirmar identidade</h2><label>E-mail<input id="email" type="email" autocomplete="username" required></label><label>Senha atual<input id="password" type="password" autocomplete="current-password" required></label><button id="loginButton">Continuar</button></form>
+<form id="confirm" hidden><h2>Confirmar exclusao</h2><div id="successors"></div><label class="check"><input id="consent" type="checkbox" required>Entendo que esta acao e permanente.</label><button class="danger">Excluir minha conta</button></form>
+<p id="message" role="status" aria-live="polite"></p>
+<section><h2>Consultar protocolo</h2><form id="status"><label>Protocolo<input id="receipt" pattern="[a-f0-9]{64}" required autocomplete="off"></label><button>Consultar andamento</button></form><p id="result" role="status" aria-live="polite"></p></section>
+</main><script src="/account-deletion.js" defer></script></body></html>
