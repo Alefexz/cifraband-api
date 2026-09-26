@@ -38,6 +38,33 @@ test('invalid vote, role and missing song fail explicitly', () => {
   }
 });
 
+test('listening suggestion accepts metadata without chords and strips fake arrangement', () => {
+    const result = scheduleMutation(schedule, profile, 'a', {action: 'suggest', song: {
+        kind: 'listening', title: ' Novo louvor ', artist: ' Artista ', key: 'C', content: 'invented',
+        referenceUrl: 'https://open.spotify.com/track/abc', suggestedByUid: 'b',
+    }}, 1);
+    const song = result.suggested_songs.at(-1);
+    assert.equal(song.title, 'Novo louvor');
+    assert.equal(song.kind, 'listening');
+    assert.equal(song.suggestedByUid, 'a');
+    assert.equal(song.content, undefined);
+    assert.equal(song.key, undefined);
+    const duplicate = scheduleMutation({...schedule, ...result}, profile, 'a', {action: 'suggest', song}, 1);
+    assert.deepEqual(duplicate, {});
+    const withoutLink = scheduleMutation(schedule, profile, 'a', {action: 'suggest', song: {kind: 'listening', title: 'Manual', artist: 'Autor'}}, 1);
+    assert.equal(withoutLink.suggested_songs.at(-1).kind, 'listening');
+});
+
+test('listening suggestions reject invalid metadata, unsafe links and outsiders', () => {
+    const base = {kind: 'listening', title: 'Louvor', artist: 'Artista'};
+    for (const extra of [{title: ' '}, {artist: ' '}, {title: 'a'.repeat(301)}, {kind: 'fake'},
+        ...['javascript:alert(1)', 'http://youtu.be/abc', 'https://youtube.com.evil.test/watch',
+            'https://user@youtube.com/watch', 'https://localhost/song', 'https://open.spotify.com/'].map(referenceUrl => ({referenceUrl}))]) {
+        assert.throws(() => scheduleMutation(schedule, profile, 'a', {action: 'suggest', song: {...base, ...extra}}, 1));
+    }
+    assert.throws(() => scheduleMutation(schedule, profile, 'outsider', {action: 'suggest', song: base}, 1), e => e.status === 403);
+});
+
 test('contact picker uses caller friendships only and returns no private fields', async () => {
   const records = {
     owner: { friends: ['same', 'cross', 'cross', '../unsafe'] },

@@ -10,6 +10,7 @@ const admin = require('firebase-admin');
 const { createUpdatePushWorker, deviceId, parseRegistration } = require('./lib/update-push');
 const { createCatalogSearch } = require('./lib/catalog-search');
 const { mountMemberActions } = require('./lib/member-actions');
+const { createSongLinks } = require('./lib/song-links');
 const { createAuthenticator } = require('./lib/firebase-auth');
 const { createAccountDeletionService, mountAccountDeletion } = require('./lib/account-deletion');
 const { createReferenceEnricher, sendSongWithReference } = require('./lib/youtube-background');
@@ -302,7 +303,8 @@ if (require.main === module) {
 }
 
 mountMemberActions(app, { authenticate: authenticateFirebaseUser,
-    limit: rateLimit({ name: 'memberActions', windowMs: 60000, max: 40 }), getAdmin: getFirebaseAdmin });
+    limit: rateLimit({ name: 'memberActions', windowMs: 60000, max: 40 }), getAdmin: getFirebaseAdmin,
+    songLinks: createSongLinks() });
 
 app.get('/catalog-search', authenticateFirebaseUser,
     rateLimit({ name: 'catalogSearch', windowMs: 60 * 1000, max: 30 }),
