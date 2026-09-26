@@ -11,6 +11,8 @@ const { createUpdatePushWorker, deviceId, parseRegistration } = require('./lib/u
 const { createCatalogSearch } = require('./lib/catalog-search');
 const { mountMemberActions } = require('./lib/member-actions');
 const { createSongLinks } = require('./lib/song-links');
+const { catalogTitle } = require('./lib/song-title');
+const { withSources, sourceFailure, sourceFailures } = require('./lib/source-diagnostics');
 const { createAuthenticator } = require('./lib/firebase-auth');
 const { createAccountDeletionService, mountAccountDeletion } = require('./lib/account-deletion');
 const { createReferenceEnricher, sendSongWithReference } = require('./lib/youtube-background');
@@ -167,6 +169,7 @@ app.get('/', (req, res) => {
         status: 'online',
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
+        songLinksRevision: 2,
         timestamp: new Date().toISOString()
     });
 });
@@ -1910,7 +1913,7 @@ function hasSafeTitleMatch(requestedTrack, foundTitle) {
 }
 
 function compositeTrackParts(track) {
-    return String(track || '')
+    return catalogTitle(track)
         .replace(/\(.*?\)/g, '')
         .replace(/\[.*?\]/g, '')
         .split(/\s*(?:\/|\+)\s*/)
@@ -1958,7 +1961,7 @@ function hasCompositeTrackCoverage(requestedTrack, foundTitle, content = '') {
 // que não têm nada a ver um com o outro, derrubando o score de uma
 // música que na real bate 100%.
 function coreTitle(text) {
-    return String(text || '')
+    return catalogTitle(text)
         .replace(/\(.*?\)/g, '')
         .replace(/\[.*?\]/g, '')
         .trim();
@@ -2210,7 +2213,7 @@ function basicTrackSlug(text) {
 
 function generateTrackTitleVariants(track) {
     const original =
-        String(track || '')
+        catalogTitle(track)
             .replace(/\s+/g, ' ')
             .trim();
 
@@ -2352,7 +2355,7 @@ function generateTrackSlugs(track) {
     // MEDLEYS
     // ========================================================
 
-    const parts = String(track)
+    const parts = catalogTitle(track)
         .replace(/\(.*?\)/g, '')
         .replace(/\[.*?\]/g, '')
         .split('/')
@@ -2985,9 +2988,10 @@ async function resolveYoutubeReference(artist, track) {
 // HTTP
 // ============================================================
 
-async function fetchHtml(url) {
+async function fetchHtml(url, responseEncoding = 'utf8') {
     try {
         const response = await axios.get(url, {
+            responseEncoding,
             timeout: REQUEST_TIMEOUT,
             headers: HEADERS,
             maxRedirects: 5,
@@ -3001,6 +3005,7 @@ async function fetchHtml(url) {
             status: response.status
         };
     } catch (error) {
+        sourceFailure(url, error);
         return null;
     }
 }
@@ -3122,6 +3127,15 @@ function cleanLinkTitle(rawTitle, url) {
 // ============================================================
 
 const ALTERNATIVE_CIFRA_PROVIDERS = [
+    {
+        source: 'los_acordes',
+        label: 'LosAcordes',
+        baseUrl: 'https://www.losacordes.com',
+        hostnames: new Set(['www.losacordes.com', 'losacordes.com']),
+        pathPrefix: '/acordes/',
+        searchDomain: 'losacordes.com/acordes',
+        responseEncoding: 'latin1'
+    },
     {
         source: 'cifras_com_br',
         label: 'Cifras',
@@ -3269,6 +3283,10 @@ function cleanAlternativeLinkTitle(rawTitle, url) {
 }
 
 function extractAlternativeProviderContent($, provider) {
+    if (provider.source === 'los_acordes') {
+        const core = $('pre#core').first();
+        return core.length ? elementText($, core[0]) : '';
+    }
     if (provider.source === 'cifras_gospel_online') {
         const complete = extractWordpressChordContent($);
         if (complete) return complete;
@@ -3313,6 +3331,10 @@ function extractAlternativeProviderMetadata(
     url,
     requestedArtist
 ) {
+    if (provider.source === 'los_acordes') {
+        const match = $('title').text().match(/^(.+?)\s+Acordes\s+-\s+(.+?)\s+\|\s+LosAcordes/i);
+        return {title: match?.[1]?.trim() || '', artist: match?.[2]?.trim() || ''};
+    }
     let title =
         $('h1').first().text().trim();
 
@@ -4445,7 +4467,7 @@ async function inspectAlternativeProviderUrl(
     }
 
     const page =
-        await fetchHtml(url);
+        await fetchHtml(url, provider.responseEncoding);
 
     if (!page) {
         return null;
@@ -4471,6 +4493,7 @@ async function inspectAlternativeProviderUrl(
             page.finalUrl || url,
             requestedArtist
         );
+    if (provider.source === 'los_acordes' && (!metadata.title || !metadata.artist)) return null;
 
     const pageTitle =
         metadata.title || requestedTrack;
@@ -4506,6 +4529,14 @@ async function inspectAlternativeProviderUrl(
             $,
             content
         );
+
+    if (provider.source === 'los_acordes') {
+        const tone = $('body').text().match(/Tono:\s*([A-G](?:#|b)?m?)(?![#bA-Za-z0-9])/);
+        if (tone) {
+            keyInfo.originalKey = tone[1];
+            keyInfo.shapeKey = tone[1];
+        }
+    }
 
     return {
         title:
@@ -4825,10 +4856,16 @@ function buildSongSearchError({
     allResults = [],
     checkedSources = []
 }) {
+    const failures = sourceFailures();
+    if (!allResults.length && failures.length) {
+        reason = 'provider_unavailable';
+    }
     const candidates =
         summarizeSearchCandidates(allResults);
 
     const reasonMessages = {
+        provider_unavailable:
+            'As fontes de cifras recusaram a consulta ou ficaram indisponíveis. Não foi possível verificar esta cifra agora; isso não significa que ela não exista.',
         medley_not_found:
             'Não encontrei uma cifra completa desse medley nas fontes disponíveis. Para evitar cifra pela metade, não abri resultado parcial.',
         no_reliable_match:
@@ -4841,7 +4878,7 @@ function buildSongSearchError({
 
     return {
         code: 'SONG_NOT_FOUND',
-        statusCode: 404,
+        statusCode: reason === 'provider_unavailable' ? 503 : 404,
         reason,
         message:
             message ||
@@ -4851,6 +4888,7 @@ function buildSongSearchError({
             reasonMessages[reason] ||
             reasonMessages.no_published_chord,
         diagnostics: {
+            sourceFailures: failures,
             artist,
             track,
             normalizedArtist:
@@ -4936,7 +4974,11 @@ function searchErrorResponse(error, artist, track) {
 // BUSCA PRINCIPAL
 // ============================================================
 
-async function findSong(
+async function findSong(artist, track) {
+    return withSources(() => findSongInternal(artist, catalogTitle(track)));
+}
+
+async function findSongInternal(
     artist,
     track
 ) {
@@ -5284,12 +5326,12 @@ app.get(
                 req.query.artist || ''
             ).trim();
 
-        const track = stripDuplicatedArtistPrefix(
+        const track = catalogTitle(stripDuplicatedArtistPrefix(
             artist,
             String(
                 req.query.track || ''
             ).trim()
-        );
+        ));
 
         if (!artist || !track) {
             return res.status(400).json({
@@ -5563,4 +5605,4 @@ if (require.main === module) app.listen(
     }
 );
 
-module.exports = { app, findSong, inspectSongUrl, isSearchResultSafeForRequest, getAppVersionPayload };
+module.exports = { app, findSong, inspectSongUrl, inspectAlternativeProviderUrl, isSearchResultSafeForRequest, getAppVersionPayload };

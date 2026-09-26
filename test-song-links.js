@@ -2,6 +2,31 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {createSongLinks, matches, canonical} = require('./lib/song-links');
 const {mountMemberActions} = require('./lib/member-actions');
+const {catalogTitle} = require('./lib/song-title');
+const {withSources, sourceFailure, sourceFailures} = require('./lib/source-diagnostics');
+const {isSearchResultSafeForRequest} = require('./server');
+
+test('truncated catalog medley keeps its name, without weakening A / B coverage', () => {
+    const title = 'Medley - Corinhos de Fogo (Deus Forte Como Jeova / Divisa de Fogo / Desemb';
+    assert.equal(catalogTitle(title), 'Medley - Corinhos de Fogo');
+    assert.equal(catalogTitle('Ruja o Leao / Talita Cumi'), 'Ruja o Leao / Talita Cumi');
+    assert.equal(matches(title, 'Midian Lima', {title: 'Midian Lima - Medley Corinhos de Fogo (Ao Vivo)', author: 'MK Music'}, 'youtube'), true);
+    assert.equal(matches(title, 'Midian Lima', {title: 'Midian Lima - Divisa de Fogo', author: 'MK Music'}, 'youtube'), false);
+    const content = 'C G Am F\nUma letra para testar\nOutra frase para cantar';
+    assert.equal(isSearchResultSafeForRequest('Midian Lima', title, {title: 'Corinhos de Fogo', content}), true);
+    assert.equal(isSearchResultSafeForRequest('FHOP', 'Ruja o Leao / Talita Cumi', {title: 'Ruja o Leao', content}), false);
+});
+
+test('source failures distinguish access errors and remain isolated by lookup', async () => {
+    await withSources(async () => {
+        sourceFailure('https://www.cifraclub.com.br/a/b/', {response: {status: 403}});
+        sourceFailure('https://www.cifraclub.com.br/a/c/', {response: {status: 404}});
+        assert.deepEqual(sourceFailures(), [{host: 'www.cifraclub.com.br', status: 403, attempts: 1}]);
+        await withSources(async () => assert.deepEqual(sourceFailures(), []));
+        assert.equal(sourceFailures().length, 1);
+    });
+    assert.deepEqual(sourceFailures(), []);
+});
 
 test('provider identity validation rejects covers, wrong artist, albums and malicious URLs', () => {
     assert.equal(matches('Ah Jesus', 'Julliany Souza', {title: 'Julliany Souza - Ah Jesus (Ao Vivo)', author: 'Julliany Souza'}, 'youtube'), true);
@@ -15,6 +40,7 @@ test('YouTube verifies oEmbed metadata, shares pending lookups and caches matche
     let calls = 0;
     const resolver = createSongLinks({env: {}, get: async url => {
         calls++;
+        if (url.includes('/results')) return {data: '<script>var ytInitialData = {"contents":{"videoRenderer":{"videoId":"ldK43s9UyQI","title":{"runs":[{"text":"Julliany Souza - Ah Jesus"}]},"ownerText":{"runs":[{"text":"Julliany Souza"}]}}}};</script>'};
         if (url.includes('bing.com')) return {data: '<a href="https://www.youtube.com/watch?v=ldK43s9UyQI">Misleading search title</a>'};
         return {data: {title: 'Julliany Souza - Ah Jesus', author_name: 'Julliany Souza'}};
     }});
