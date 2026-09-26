@@ -104,15 +104,15 @@ const enrichYoutubeReference = createReferenceEnricher({
     onError: error => console.warn('YouTube background:', error.message)
 });
 
-const BUNDLED_APP_VERSION = '1.6.0';
-const BUNDLED_APP_BUILD = 28;
+const BUNDLED_APP_VERSION = '1.6.1';
+const BUNDLED_APP_BUILD = 29;
 const BUNDLED_MINIMUM_BUILD = 27;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.0/cifra-band-1.6.0-build-28.apk';
-const BUNDLED_APK_SHA256 = '687579b3b35b5053653fe7a9497da2b6c22b9d39b587f08db63a86aab2525949';
-const BUNDLED_APK_BYTES = 68019046;
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.1/cifra-band-1.6.1-build-29.apk';
+const BUNDLED_APK_SHA256 = 'b047b8efd6de5418e4da8d497e5fc74c2aca3a65207b61caf30a8cc24b5f52ca';
+const BUNDLED_APK_BYTES = 68052014;
 const BUNDLED_RELEASE_NOTES =
-    'Central de ensaios com preparação por música e integrante. Correções de acordes com capotraste, downloads offline, favoritos por conta e compartilhamento. Exclusão de conta no perfil e melhorias de estabilidade e atualização.';
+    'Sugira louvores por nome e artista, mesmo sem cifra e sem colar links. Abra a sugestão para consultar cifra, YouTube e Spotify separadamente. Referências confirmadas abrem nos aplicativos externos. Spotify depende da configuração do serviço; links não confirmados ficam indisponíveis.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
