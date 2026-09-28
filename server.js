@@ -169,7 +169,7 @@ app.get('/', (req, res) => {
         status: 'online',
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
-        songLinksRevision: 2,
+        songLinksRevision: 3,
         timestamp: new Date().toISOString()
     });
 });
