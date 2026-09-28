@@ -4,7 +4,17 @@ const {createSongLinks, matches, canonical} = require('./lib/song-links');
 const {mountMemberActions} = require('./lib/member-actions');
 const {catalogTitle} = require('./lib/song-title');
 const {withSources, sourceFailure, sourceFailures} = require('./lib/source-diagnostics');
-const {isSearchResultSafeForRequest} = require('./server');
+const {isSearchResultSafeForRequest, generateTrackSlugs} = require('./server');
+
+test('singular medley search tries the published plural slug without changing song identity', () => {
+    assert.ok(generateTrackSlugs('medley corinho de fogo').includes('medley-corinhos-de-fogo'));
+    assert.ok(generateTrackSlugs('Corinhos de Fogo (Medley)').includes('corinhos-de-fogo-medley'));
+    const content = 'Bm F#m\nDeus forte como Jeova\nNao ha outro que eu conheca';
+    assert.equal(isSearchResultSafeForRequest('Midian Lima', 'medley corinho de fogo',
+        {title: 'Medley - Corinhos de Fogo', artist: 'Midian Lima', content}), true);
+    assert.equal(isSearchResultSafeForRequest('Midian Lima', 'medley corinho de fogo',
+        {title: 'Medley de outro louvor', artist: 'Outra Pessoa', content}), false);
+});
 
 test('truncated catalog medley keeps its name, without weakening A / B coverage', () => {
     const title = 'Medley - Corinhos de Fogo (Deus Forte Como Jeova / Divisa de Fogo / Desemb';

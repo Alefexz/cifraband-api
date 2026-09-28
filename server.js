@@ -169,7 +169,7 @@ app.get('/', (req, res) => {
         status: 'online',
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
-        songLinksRevision: 3,
+        songLinksRevision: 4,
         timestamp: new Date().toISOString()
     });
 });
@@ -1858,6 +1858,18 @@ function significantTokens(text) {
     );
 }
 
+function singularPluralEquivalent(requestedTrack, foundTitle) {
+    const requested = significantTokens(coreTitle(requestedTrack));
+    const found = significantTokens(coreTitle(foundTitle));
+    if (requested.length < 2 || requested.length !== found.length) return false;
+    const singular = token => token.length >= 6 && token.endsWith('s')
+        ? token.slice(0, -1) : token;
+    const exactMatches = requested.filter((token, index) => token === found[index]);
+    const changed = requested.filter((token, index) => token !== found[index]);
+    return exactMatches.length > 0 && changed.length === 1 &&
+        requested.every((token, index) => singular(token) === singular(found[index]));
+}
+
 function hasSafeTitleMatch(requestedTrack, foundTitle) {
     const requested =
         normalizeText(coreTitle(requestedTrack));
@@ -1901,6 +1913,8 @@ function hasSafeTitleMatch(requestedTrack, foundTitle) {
     if (allRequestedFound) {
         return true;
     }
+
+    if (singularPluralEquivalent(requestedTrack, foundTitle)) return true;
 
     if (allFoundRequested) {
         // Aceitar o título encontrado como subconjunto só é seguro
@@ -2238,6 +2252,22 @@ function generateTrackTitleVariants(track) {
 
     addWithPraPara(original);
     addWithPraPara(coreTitle(original));
+
+    // Catalog titles often differ by one singular/plural word. Try only
+    // distinctive words, then still validate page identity and full content.
+    const words = coreTitle(original).split(/\s+/);
+    for (let index = 0, added = 0; index < words.length && added < 2; index++) {
+        const normalized = normalizeText(words[index]);
+        if (normalized.length < 5 || GENERIC_WORDS.has(normalized) || STOPWORDS.has(normalized)) continue;
+        const replacement = normalized.endsWith('s')
+            ? normalized.slice(0, -1)
+            : /[aeiou]$/.test(normalized) ? `${normalized}s` : '';
+        if (!replacement) continue;
+        const changed = [...words];
+        changed[index] = replacement;
+        addWithPraPara(changed.join(' '));
+        added++;
+    }
 
     const withoutFeaturing =
         original
@@ -3712,6 +3742,11 @@ function scoreSong(requestedArtist, requestedTrack, foundArtist, foundTitle) {
         score += 15;
     }
 
+    if (normalizeText(requestedArtist) === normalizeText(foundArtist) &&
+        singularPluralEquivalent(requestedTrack, foundTitle)) {
+        score += 35;
+    }
+
     return score;
 }
 
@@ -5025,6 +5060,17 @@ async function findSongInternal(
         'alternative_web_search'
     ];
 
+    let earlyAlternative = null;
+    if (/^medley\b|\(medley\)/i.test(track)) {
+        earlyAlternative = await searchAlternativeProvidersDirect(artist, track);
+        allResults.push(...earlyAlternative);
+        const earlyBest = chooseBestResult(earlyAlternative);
+        if (earlyBest && earlyBest.score >= 90) {
+            console.log('🏆 Medley completo encontrado em fonte alternativa direta');
+            return earlyBest;
+        }
+    }
+
     let results =
         await searchDirect(
             artist,
@@ -5124,13 +5170,8 @@ async function findSongInternal(
         '4️⃣ TESTANDO PROVEDORES ALTERNATIVOS...'
     );
 
-    results =
-        await searchAlternativeProvidersDirect(
-            artist,
-            track
-        );
-
-    allResults.push(...results);
+    results = earlyAlternative || await searchAlternativeProvidersDirect(artist, track);
+    if (!earlyAlternative) allResults.push(...results);
 
     best =
         chooseBestResult(
@@ -5605,4 +5646,4 @@ if (require.main === module) app.listen(
     }
 );
 
-module.exports = { app, findSong, inspectSongUrl, inspectAlternativeProviderUrl, isSearchResultSafeForRequest, getAppVersionPayload };
+module.exports = { app, findSong, inspectSongUrl, inspectAlternativeProviderUrl, isSearchResultSafeForRequest, getAppVersionPayload, generateTrackSlugs };
