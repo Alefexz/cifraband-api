@@ -169,9 +169,44 @@ app.get('/', (req, res) => {
         status: 'online',
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
-        songLinksRevision: 4,
+        songLinksRevision: 5,
         timestamp: new Date().toISOString()
     });
+});
+
+let chordSourceHealth;
+let chordSourceProbe;
+app.get('/source-health', async (req, res) => {
+    if (!chordSourceHealth || Date.now() - chordSourceHealth.checkedAtMs > 5 * 60 * 1000) {
+        chordSourceProbe ||= (async () => {
+            const started = Date.now();
+            let status = 0;
+            let usable = false;
+            try {
+                const response = await axios.get(
+                    'https://www.losacordes.com/acordes/midian-lima/medley-corinhos-de-fogo/',
+                    { headers: HEADERS, timeout: 9000, maxRedirects: 2,
+                        responseType: 'arraybuffer', validateStatus: () => true }
+                );
+                status = response.status;
+                if (status === 200) {
+                    const $ = cheerio.load(Buffer.from(response.data).toString('latin1'));
+                    const core = $('pre#core').first();
+                    usable = core.length > 0 &&
+                        analyzeChordContent(elementText($, core[0])).usable;
+                }
+            } catch (error) {
+                status = Number(error.response?.status || 0);
+            }
+            chordSourceHealth = { source: 'los_acordes', status, usable,
+                elapsedMs: Date.now() - started, checkedAt: new Date().toISOString(),
+                checkedAtMs: Date.now() };
+            return chordSourceHealth;
+        })().finally(() => { chordSourceProbe = null; });
+    }
+    const { checkedAtMs, ...health } = chordSourceProbe
+        ? await chordSourceProbe : chordSourceHealth;
+    res.json(health);
 });
 
 function parseBooleanEnv(value, fallback = false) {
