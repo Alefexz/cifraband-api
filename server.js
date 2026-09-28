@@ -106,15 +106,15 @@ const enrichYoutubeReference = createReferenceEnricher({
     onError: error => console.warn('YouTube background:', error.message)
 });
 
-const BUNDLED_APP_VERSION = '1.6.1';
-const BUNDLED_APP_BUILD = 29;
+const BUNDLED_APP_VERSION = '1.6.2';
+const BUNDLED_APP_BUILD = 30;
 const BUNDLED_MINIMUM_BUILD = 27;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.1/cifra-band-1.6.1-build-29.apk';
-const BUNDLED_APK_SHA256 = 'b047b8efd6de5418e4da8d497e5fc74c2aca3a65207b61caf30a8cc24b5f52ca';
-const BUNDLED_APK_BYTES = 68052014;
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.2/cifra-band-1.6.2-build-30.apk';
+const BUNDLED_APK_SHA256 = 'bfd4d5ec869afd4a9ab2ada6d4a76c7ad5dbc5de87d4a88198a715b727d09558';
+const BUNDLED_APK_BYTES = 68183086;
 const BUNDLED_RELEASE_NOTES =
-    'Sugira louvores por nome e artista, mesmo sem cifra e sem colar links. Abra a sugestão para consultar cifra, YouTube e Spotify separadamente. Referências confirmadas abrem nos aplicativos externos. Spotify depende da configuração do serviço; links não confirmados ficam indisponíveis.';
+    'Busca de cifras completas e medleys mais confiável. Sugestões exibem cifra e YouTube, sem Spotify. Download de atualização pode ser retomado se a conexão cair.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
