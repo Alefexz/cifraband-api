@@ -106,15 +106,15 @@ const enrichYoutubeReference = createReferenceEnricher({
     onError: error => console.warn('YouTube background:', error.message)
 });
 
-const BUNDLED_APP_VERSION = '1.6.2';
-const BUNDLED_APP_BUILD = 30;
+const BUNDLED_APP_VERSION = '1.6.3';
+const BUNDLED_APP_BUILD = 31;
 const BUNDLED_MINIMUM_BUILD = 27;
 const BUNDLED_APK_URL =
-    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.2/cifra-band-1.6.2-build-30.apk';
-const BUNDLED_APK_SHA256 = 'bfd4d5ec869afd4a9ab2ada6d4a76c7ad5dbc5de87d4a88198a715b727d09558';
-const BUNDLED_APK_BYTES = 68183086;
+    'https://github.com/Alefexz/cifra_band/releases/download/v1.6.3/cifra-band-1.6.3-build-31.apk';
+const BUNDLED_APK_SHA256 = '908d53f221dfbd53292febe1a3ab73a39d5ec21f54a58f96e46a223c2e4e3b2f';
+const BUNDLED_APK_BYTES = 69641506;
 const BUNDLED_RELEASE_NOTES =
-    'Busca de cifras completas e medleys mais confiável. Sugestões exibem cifra e YouTube, sem Spotify. Download de atualização pode ser retomado se a conexão cair.';
+    'Corrige a abertura de cifras completas e medleys quando o servidor nao consegue acessar a fonte. O app valida artista, titulo, letra, acordes e partes do medley.';
 const FEEDBACK_TYPES =
     new Set(['bug', 'wrong_chord', 'notification', 'update', 'question', 'suggestion']);
 const FEEDBACK_SEVERITIES =
