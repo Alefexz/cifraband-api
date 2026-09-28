@@ -169,7 +169,7 @@ app.get('/', (req, res) => {
         status: 'online',
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
-        songLinksRevision: 5,
+        songLinksRevision: 6,
         timestamp: new Date().toISOString()
     });
 });
@@ -180,25 +180,31 @@ app.get('/source-health', async (req, res) => {
     if (!chordSourceHealth || Date.now() - chordSourceHealth.checkedAtMs > 5 * 60 * 1000) {
         chordSourceProbe ||= (async () => {
             const started = Date.now();
-            let status = 0;
-            let usable = false;
-            try {
-                const response = await axios.get(
-                    'https://www.losacordes.com/acordes/midian-lima/medley-corinhos-de-fogo/',
-                    { headers: HEADERS, timeout: 9000, maxRedirects: 2,
-                        responseType: 'arraybuffer', validateStatus: () => true }
-                );
-                status = response.status;
-                if (status === 200) {
-                    const $ = cheerio.load(Buffer.from(response.data).toString('latin1'));
-                    const core = $('pre#core').first();
-                    usable = core.length > 0 &&
-                        analyzeChordContent(elementText($, core[0])).usable;
+            const sources = await Promise.all([
+                ['los_acordes', 'https://www.losacordes.com/acordes/midian-lima/medley-corinhos-de-fogo/'],
+                ['cifras', 'https://www.cifras.com.br/cifra/midian-lima/medley-corinhos-de-fogo'],
+                ['cifraclub', 'https://www.cifraclub.com.br/midian-lima/medley-corinhos-de-fogo/']
+            ].map(async ([source, url]) => {
+                let status = 0;
+                let usable = false;
+                try {
+                    const response = await axios.get(url,
+                        { headers: HEADERS, timeout: 9000, maxRedirects: 2,
+                            responseType: 'arraybuffer', validateStatus: () => true });
+                    status = response.status;
+                    if (status === 200) {
+                        const encoding = source === 'los_acordes' ? 'latin1' : 'utf8';
+                        const $ = cheerio.load(Buffer.from(response.data).toString(encoding));
+                        const content = source === 'los_acordes'
+                            ? elementText($, $('pre#core').first()[0]) : extractChordContent($);
+                        usable = analyzeChordContent(content).usable;
+                    }
+                } catch (error) {
+                    status = Number(error.response?.status || 0);
                 }
-            } catch (error) {
-                status = Number(error.response?.status || 0);
-            }
-            chordSourceHealth = { source: 'los_acordes', status, usable,
+                return { source, status, usable };
+            }));
+            chordSourceHealth = { sources,
                 elapsedMs: Date.now() - started, checkedAt: new Date().toISOString(),
                 checkedAtMs: Date.now() };
             return chordSourceHealth;
