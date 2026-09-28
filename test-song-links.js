@@ -36,6 +36,17 @@ test('provider identity validation rejects covers, wrong artist, albums and mali
     for (const u of ['https://open.spotify.com/album/4adUUVskCSWSoRAPcpAVYm', 'https://open.spotify.com.evil.test/track/4adUUVskCSWSoRAPcpAVYm', 'http://open.spotify.com/track/4adUUVskCSWSoRAPcpAVYm']) assert.equal(canonical('spotify', u), null);
 });
 
+test('YouTube accepts spacing aliases and medley word order only with artist identity', () => {
+    assert.equal(matches('Medley Pentecostal', 'Attos2 Worship',
+        {title: 'MEDLEY PENTECOSTAL | AO VIVO | ATTOS 2 WORSHIP (CLIPE OFICIAL)', author: 'Vigilia Attos2'}, 'youtube'), true);
+    assert.equal(matches('Corinhos de Fogo (Medley)', 'Banda Som e Louvor',
+        {title: 'Banda Som e Louvor | Medley Corinhos de Fogo', author: 'Trofeu Gerando Salvacao'}, 'youtube'), true);
+    assert.equal(matches('Medley Pentecostal', 'Attos2 Worship',
+        {title: 'Medley Pentecostal - Outra Banda', author: 'Outra Banda'}, 'youtube'), false);
+    assert.equal(matches('Medley Pentecostal', 'Attos2 Worship',
+        {title: 'Medley Pentecostal | Attos 2 Worship [COVER]', author: 'Outro'}, 'youtube'), false);
+});
+
 test('YouTube verifies oEmbed metadata, shares pending lookups and caches matched links', async () => {
     let calls = 0;
     const resolver = createSongLinks({env: {}, get: async url => {
