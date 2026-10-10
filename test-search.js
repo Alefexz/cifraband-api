@@ -4,17 +4,24 @@
 //
 // Uso:
 //   FIREBASE_ID_TOKEN=... node test-search.js
-//   FIREBASE_WEB_API_KEY=... node test-search.js
 //   API_BASE=http://localhost:3000 FIREBASE_ID_TOKEN=... node test-search.js
 //
 // Depende só do axios, que o projeto já usa.
 
 const axios = require('axios');
+const {validateSearchResponse} = require('./lib/search-acceptance');
 
 const API_BASE = process.env.API_BASE || 'https://cifraband-api.onrender.com';
 const SLOW_THRESHOLD_MS = 15000; // acima disso, avisa mesmo quando acha
 
 const TEST_CASES = [
+  // Paginas de cifra publicadas, verificadas em 01/10/2026.
+  { category: 'Gospel antigo', artist: 'Shirley Carvalhaes', track: 'Deus Tremendo' },
+  { category: 'Gospel antigo', artist: 'Lauriete', track: 'João Viu' },
+  { category: 'Harpa Cristã', artist: 'Harpa Cristã', track: 'Hino 33' },
+  { category: 'Harpa Cristã', artist: 'Harpa Cristã', track: 'Dos Vales É o Lírio' },
+  { category: 'Medley publicado', artist: 'Midian Lima', track: 'Medley - Corinhos de Fogo' },
+  { category: 'Medley publicado', artist: 'Isadora Pompeo', track: 'Hino Da Vitória / Com Muito Louvor (pot-pourri)' },
   // ── Regressão: casos que já sabemos que funcionavam ──
   { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida', track: 'Santo pra Sempre (Ao Vivo)' },
   { category: 'Culto real / artista vindo do catálogo', artist: 'Gabriel Guedes de Almeida', track: 'Vitorioso És (Ao Vivo)' },
@@ -76,25 +83,9 @@ const TEST_CASES = [
 ];
 
 async function getAuthHeaders() {
-  if (process.env.FIREBASE_ID_TOKEN) {
-    return {
-      Authorization: `Bearer ${process.env.FIREBASE_ID_TOKEN}`
-    };
-  }
-
-  if (!process.env.FIREBASE_WEB_API_KEY) {
-    return {};
-  }
-
-  const response = await axios.post(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${process.env.FIREBASE_WEB_API_KEY}`,
-    { returnSecureToken: true },
-    { timeout: 20000 }
-  );
-
-  return {
-    Authorization: `Bearer ${response.data.idToken}`
-  };
+  return process.env.FIREBASE_ID_TOKEN
+    ? {Authorization: `Bearer ${process.env.FIREBASE_ID_TOKEN}`}
+    : {};
 }
 
 function formatMs(ms) {
@@ -132,11 +123,12 @@ async function runOne(testCase, headers) {
     }
 
     const data = response.data;
+    const acceptance = validateSearchResponse(response.status, data, testCase);
     return {
       ...testCase,
-      ok: true,
+      ok: acceptance.ok,
       elapsed,
-      detail: `"${data.title}" — ${data.artist} — tom ${data.originalKey || '?'} — fonte ${data.source || '?'} — score ${data.searchScore}`
+      detail: `${acceptance.reason}: "${data?.title}" — ${data?.artist} — fonte ${data?.source || '?'}`
     };
   } catch (error) {
     const elapsed = Date.now() - start;
@@ -149,7 +141,9 @@ async function main() {
   const headers = await getAuthHeaders();
 
   if (!headers.Authorization) {
-    console.log('Aviso: sem FIREBASE_ID_TOKEN ou FIREBASE_WEB_API_KEY. A API em produção deve retornar 401.\n');
+    console.error('Teste não executado: configure FIREBASE_ID_TOKEN de uma conta de teste autorizada.');
+    process.exitCode = 2;
+    return;
   }
 
   let passed = 0;
@@ -179,6 +173,10 @@ async function main() {
   console.log(`\n════════════════════════════════`);
   console.log(`${passed}/${passed + failed} passaram`);
   console.log(`════════════════════════════════`);
+  if (failed) process.exitCode = 1;
 }
 
-main();
+main().catch(error => {
+  console.error(`Teste interrompido: ${error.message}`);
+  process.exitCode = 2;
+});

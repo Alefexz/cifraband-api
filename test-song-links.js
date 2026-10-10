@@ -23,7 +23,8 @@ test('truncated catalog medley keeps its name, without weakening A / B coverage'
     assert.equal(matches(title, 'Midian Lima', {title: 'Midian Lima - Medley Corinhos de Fogo (Ao Vivo)', author: 'MK Music'}, 'youtube'), true);
     assert.equal(matches(title, 'Midian Lima', {title: 'Midian Lima - Divisa de Fogo', author: 'MK Music'}, 'youtube'), false);
     const content = 'C G Am F\nUma letra para testar\nOutra frase para cantar';
-    assert.equal(isSearchResultSafeForRequest('Midian Lima', title, {title: 'Corinhos de Fogo', content}), true);
+    assert.equal(isSearchResultSafeForRequest('Midian Lima', title, {title: 'Corinhos de Fogo', artist: 'Midian Lima', content}), true);
+    assert.equal(isSearchResultSafeForRequest('Midian Lima', title, {title: 'Corinhos de Fogo', content}), false);
     assert.equal(isSearchResultSafeForRequest('FHOP', 'Ruja o Leao / Talita Cumi', {title: 'Ruja o Leao', content}), false);
 });
 

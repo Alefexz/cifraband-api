@@ -220,13 +220,12 @@ async function testSong(item, token, index) {
   }
 
   const data = response.data || {};
-  const titleOk =
-    normalizeText(data.title) === normalizeText(item.track) ||
-    normalizeText(data.title).includes(normalizeText(item.track)) ||
-    normalizeText(item.track).includes(normalizeText(data.title));
+  const acceptance = require('./lib/search-acceptance').validateSearchResponse(response.status, data, item);
+  const titleOk = acceptance.ok;
 
   return {
-    ok: true,
+    ok: acceptance.ok,
+    error: acceptance.ok ? undefined : acceptance.reason,
     titleOk,
     index,
     elapsedMs,
@@ -339,6 +338,7 @@ async function main() {
   const tokens = await createTokenPool();
   const results = await runPool(items, tokens);
   printSummary(results);
+  if (results.some(result => !result.ok)) process.exitCode = 1;
 }
 
 main().catch(error => {

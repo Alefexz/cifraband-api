@@ -26,6 +26,42 @@ test('limited typos work but hymn numbers never fuzzy match', () => {
     assert.equal(catalog.search('546 cancao').length, 0);
     assert.equal(catalog.search('545 cancao')[0].cacheId, 'b');
 });
+test('completes last word, prioritizes exact titles, never prefixes numbers', () => {
+    const catalog = buildCatalog([
+        ...docs,
+        { id: 'd', title: 'Cancao', artist: 'Teste', content },
+        { id: 'e', title: 'Cancao 5450', artist: 'Harpa', content },
+    ]);
+    assert.equal(catalog.search('cancao')[0].cacheId, 'd');
+    assert.ok(catalog.search('cancao band').some(hit => hit.cacheId === 'a'));
+    assert.equal(catalog.search('545')[0].cacheId, 'b');
+    assert.ok(!catalog.search('545').some(hit => hit.cacheId === 'e'));
+});
+test('stale searches return immediately while only one refresh loads', async () => {
+    let time = 0, calls = 0, release;
+    const search = createCatalogSearch({
+        load: () => ++calls === 1 ? docs : new Promise(resolve => { release = resolve; }),
+        now: () => time, ttl: 10,
+    });
+    await search('cancao');
+    time = 11;
+    const results = await Promise.all([search('cancao'), search('banda')]);
+    assert.equal(calls, 2);
+    assert.ok(results.every(result => result.stale && result.results.length));
+    release([...docs, { id: 'new', title: 'Nova Cancao', artist: 'Teste', content }]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await search('nova cancao')).results[0].cacheId, 'new');
+    assert.equal(calls, 2);
+});
+test('hung initial catalog load times out and uses retry backoff', async () => {
+    let calls = 0;
+    const search = createCatalogSearch({
+        load: () => { calls++; return new Promise(() => {}); }, loadTimeout: 10,
+    });
+    await assert.rejects(search('cancao'), /catalog_load_timeout/);
+    await assert.rejects(search('cancao'), /catalog_unavailable/);
+    assert.equal(calls, 1);
+});
 test('coalesces loads and reuses index until TTL', async () => {
     let calls = 0, time = 100;
     const search = createCatalogSearch({ load: async () => { calls++; return docs; }, now: () => time, ttl: 10 });
