@@ -78,6 +78,11 @@ test('failed enrichment is caught; existing references skipped; queue is bounded
 
 test('production song paths use the nonblocking responder and no resolver await', () => {
     const source = readFileSync(require.resolve('./server'), 'utf8');
-    assert.equal((source.match(/sendSongWithReference\(res,/g) || []).length, 4);
+    // Global cache and source now share the final responder after their race.
+    assert.equal((source.match(/sendSongWithReference\(res,/g) || []).length, 3);
+    assert.match(source, /resolveCacheAndSource\(\{/);
+    assert.match(source, /res\.set\('X-Cifra-Resolution', 'memory'\)/);
+    assert.match(source, /res\.set\('X-Cifra-Resolution', 'shared'\)/);
+    assert.match(source, /res\.set\('X-Cifra-Resolution', detail\.origin\)/);
     assert.doesNotMatch(source, /await\s+resolveYoutubeReference\(/);
 });

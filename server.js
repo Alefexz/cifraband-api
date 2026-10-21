@@ -14,6 +14,9 @@ const {createLocalScorer, createCandidateReranker} = require('./lib/candidate-re
 const { mountMemberActions } = require('./lib/member-actions');
 const { createSongLinks } = require('./lib/song-links');
 const { catalogTitle } = require('./lib/song-title');
+const {resolveCacheAndSource} = require('./lib/cache-source-race');
+const {createStructuredDiscovery, hymnNumber, numberedHymnMatch} = require('./lib/structured-discovery');
+const {createArtistCatalogDiscovery} = require('./lib/artist-catalog-discovery');
 const { withSources, sourceFailure, sourceFailures, sourceBlocked, sourceAttempt, sourceAttempts, sourceRequestOptions,
     contentFinding, contentFindings } = require('./lib/source-diagnostics');
 axios.interceptors.request.use(config => {
@@ -42,6 +45,10 @@ const discoveryStore = firestoreDiscoveryStore(() => {
     return getFirebaseAdmin().firestore();
 });
 const discoveryIndex = createDiscoveryIndex({store: discoveryStore});
+const discoverStructured = createStructuredDiscovery({get: (...args) => axios.get(...args),
+    onAttempt: sourceAttempt, onFailure: sourceFailure});
+const discoverAlternativeCatalog = createArtistCatalogDiscovery({get: (...args) => axios.get(...args),
+    index: discoveryIndex, onAttempt: sourceAttempt, onFailure: sourceFailure, blocked: sourceBlocked});
 const localScorer = createLocalScorer();
 const rerankCandidates = createCandidateReranker({score: localScorer.score, normalize: normalizeText});
 const searchGlobalCatalog = createCatalogSearch({rerank: rerankCandidates, load: async () => {
@@ -199,7 +206,7 @@ app.get('/', (req, res) => {
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
         songLinksRevision: 6,
-        searchRevision: '2026-10-09-discovery-1',
+        searchRevision: '2026-10-21-catalog-3',
         searchReranker: localScorer.status(),
         timestamp: new Date().toISOString()
     });
@@ -1957,6 +1964,10 @@ function hasSafeTitleMatch(requestedTrack, foundTitle) {
         return true;
     }
 
+    // A numbered sequel can be a different composition, not a spelling variant.
+    const sequel = title => title.match(/\b(?:ii|iii|iv|v|vi|vii|viii|ix|x)$/)?.[0] || '';
+    if (sequel(requested) !== sequel(found)) return false;
+
     const requestedTokens =
         significantTokens(requested);
 
@@ -2011,7 +2022,8 @@ function hasCompositeTrackCoverage(requestedTrack, foundTitle, content = '') {
     const parts = compositeTrackParts(requestedTrack);
 
     if (parts.length < 2) {
-        return true;
+        return compositeTrackParts(foundTitle).length < 2 ||
+            /\b(?:medley|pot[ -]?pourri)\b/i.test(requestedTrack);
     }
 
     const titleText = normalizeText(foundTitle);
@@ -2567,7 +2579,7 @@ function isSearchResultSafeForRequest(artist, track, result) {
         return false;
     }
 
-    if (!hasSafeTitleMatch(track, result.title || '')) {
+    if (!matchesRequestedTitle(artist, track, result.title || '')) {
         return false;
     }
 
@@ -2584,6 +2596,10 @@ function isSearchResultSafeForRequest(artist, track, result) {
     }
 
     return true;
+}
+
+function matchesRequestedTitle(artist, track, found) {
+    return hymnNumber(artist, track) ? numberedHymnMatch(artist, track, found) : hasSafeTitleMatch(track, found);
 }
 
 const NOTE_INDEX = {
@@ -3273,8 +3289,8 @@ const ALTERNATIVE_CIFRA_PROVIDERS = [
             'cifrasgospel.online',
             'www.cifrasgospel.online'
         ]),
-        pathPrefix: '/cifra/',
-        searchDomain: 'cifrasgospel.online/cifra'
+        pathPrefix: '/',
+        searchDomain: 'cifrasgospel.online'
     }
 ];
 
@@ -3337,8 +3353,9 @@ function isValidAlternativeProviderUrl(
                 .split('/')
                 .filter(Boolean);
 
-        // /cifra/artista/musica
-        return parts.length >= 3;
+        // Most providers use /cifra/artist/song; Gospel Online uses /artist/song.
+        const prefixParts = provider.pathPrefix.split('/').filter(Boolean).length;
+        return prefixParts ? parts.length >= prefixParts + 2 : parts.length === 2;
     } catch (error) {
         return false;
     }
@@ -3363,12 +3380,13 @@ function titleFromAlternativeProviderUrl(url) {
                 .split('/')
                 .filter(Boolean);
 
-        if (parts.length < 3) {
+        const provider = alternativeProviderForUrl(url);
+        if (!provider) {
             return '';
         }
 
         return parts
-            .slice(2)
+            .slice(provider.pathPrefix.split('/').filter(Boolean).length + 1)
             .join(' ')
             .replace(/-/g, ' ')
             .replace(/\s+/g, ' ')
@@ -3881,13 +3899,9 @@ async function inspectSongUrl(
     const pageArtist =
         metadata.artist || requestedArtist;
 
-    const score =
-        scoreSong(
-            requestedArtist,
-            requestedTrack,
-            pageArtist,
-            pageTitle
-        );
+    const score = numberedHymnMatch(requestedArtist, requestedTrack, pageTitle) &&
+        normalizeText(requestedArtist) === normalizeText(pageArtist) ? 100 :
+        scoreSong(requestedArtist, requestedTrack, pageArtist, pageTitle);
 
     // ========================================================
     // NÃO ACEITAR RESULTADO MUITO DISTANTE
@@ -3895,10 +3909,7 @@ async function inspectSongUrl(
 
     if (
         score < 45 ||
-        !hasSafeTitleMatch(
-            requestedTrack,
-            pageTitle
-        ) ||
+        !matchesRequestedTitle(requestedArtist, requestedTrack, pageTitle) ||
         !hasCompositeTrackCoverage(
             requestedTrack,
             pageTitle,
@@ -3959,6 +3970,7 @@ async function runConcurrent(
 
     async function runner() {
         while (!finished) {
+            try { sourceRequestOptions(); } catch { return; }
             const current =
                 index++;
 
@@ -4426,6 +4438,32 @@ async function searchCifraClub(
     );
 }
 
+async function searchStructuredCifraClub(artist, track) {
+    const links = (await discoverStructured(artist, track)).filter(item =>
+        matchesRequestedTitle(artist, track, item.title));
+    const ranked = links.map(item => ({...item, score: numberedHymnMatch(artist, track, item.title)
+        ? 100 : scoreSong(artist, track, item.artist, item.title)}))
+        .sort((a, b) => b.score - a.score);
+    rememberDiscoveredLinks(artist, ranked);
+    for (const item of ranked) contentFinding(item.url, 'discovered_url');
+    return runConcurrent(ranked, 2, item => inspectSongUrl(item.url, artist, track),
+        result => isSearchResultSafeForRequest(artist, track, result));
+}
+
+async function searchAlternativeArtistCatalog(artist, track) {
+    const links = (await discoverAlternativeCatalog(artist))
+        .filter(item => matchesRequestedTitle(artist, track, item.title));
+    const exact = links.filter(item => normalizeText(coreTitle(item.title)) === normalizeText(coreTitle(track)));
+    const ranked = (exact.length ? exact : links).map(item => ({...item, score: numberedHymnMatch(artist, track, item.title)
+        ? 100 : scoreSong(artist, track, item.artist, item.title)}))
+        .sort((a, b) => b.score - a.score).slice(0, 4);
+    const provider = ALTERNATIVE_CIFRA_PROVIDERS.find(item => item.source === 'los_acordes');
+    for (const item of ranked) contentFinding(item.url, 'discovered_url');
+    return runConcurrent(ranked, 2,
+        item => inspectAlternativeProviderUrl(item.url, provider, artist, track),
+        result => isSearchResultSafeForRequest(artist, track, result));
+}
+
 // ============================================================
 // BUSCA WEB COMO ÚLTIMO RECURSO
 // ============================================================
@@ -4668,20 +4706,13 @@ async function inspectAlternativeProviderUrl(
     const pageArtist =
         metadata.artist || requestedArtist;
 
-    const score =
-        scoreSong(
-            requestedArtist,
-            requestedTrack,
-            pageArtist,
-            pageTitle
-        );
+    const score = numberedHymnMatch(requestedArtist, requestedTrack, pageTitle) &&
+        normalizeText(requestedArtist) === normalizeText(pageArtist) ? 100 :
+        scoreSong(requestedArtist, requestedTrack, pageArtist, pageTitle);
 
     if (
         score < 50 ||
-        !hasSafeTitleMatch(
-            requestedTrack,
-            pageTitle
-        ) ||
+        !matchesRequestedTitle(requestedArtist, requestedTrack, pageTitle) ||
         !hasCompositeTrackCoverage(
             requestedTrack,
             pageTitle,
@@ -5206,6 +5237,8 @@ async function findSongInternal(
     // anterior, era descartado pra sempre em vez de virar fallback.
     const allResults = [];
     const checkedSources = [
+        'cifraclub_structured_search',
+        'alternative_artist_catalog',
         'cifraclub_direct',
         'cifraclub_artist_catalog',
         'cifraclub_internal_search',
@@ -5233,6 +5266,25 @@ async function findSongInternal(
         if (selected.length) return chooseBestResult(selected);
     }
     let earlyAlternative = [];
+    const catalogTask = searchAlternativeArtistCatalog(artist, track).then(results => {
+        const safe = results.filter(result => isSearchResultSafeForRequest(artist, track, result));
+        allResults.push(...safe);
+        const best = chooseBestResult(safe);
+        if (best) return best;
+        throw Error('No validated alternative catalog candidate');
+    });
+    // Observe rejection immediately while structured discovery gets its head start.
+    void catalogTask.catch(() => {});
+    const structuredTask = searchStructuredCifraClub(artist, track).then(results => {
+        const safe = results.filter(result => isSearchResultSafeForRequest(artist, track, result));
+        allResults.push(...safe);
+        const best = chooseBestResult(safe);
+        if (best) return best;
+        throw Error('No validated structured candidate');
+    });
+    // Give real addresses a short head start, without waiting indefinitely on discovery.
+    const structuredEarly = await bounded(() => Promise.any([structuredTask, catalogTask]), 400, null);
+    if (structuredEarly) return structuredEarly;
     const directCandidate = async (search, alternative = false) => {
         const candidates = (await search(artist, track))
             .filter(result => isSearchResultSafeForRequest(artist, track, result));
@@ -5249,6 +5301,8 @@ async function findSongInternal(
                 if (best) return best;
                 throw Error('No validated known URL');
             })] : []),
+            structuredTask,
+            catalogTask,
             directCandidate(searchDirect),
             directCandidate(searchAlternativeProvidersDirect, true)
         ]);
@@ -5351,20 +5405,7 @@ async function findSongInternal(
         return best;
     }
 
-    if (compositeTrackParts(track).length > 1) {
-        console.log(
-            '🧩 Medley/composição não encontrada como cifra completa; pulando busca web ampla para evitar resultado parcial.'
-        );
-
-        throwSongSearchError({
-            artist,
-            track,
-            reason: 'medley_not_found',
-            allResults,
-            checkedSources:
-                checkedSources.slice(0, 4)
-        });
-    }
+    // Discover complete medleys too; acceptance still checks all requested parts.
 
     // ========================================================
     // 5. BUSCA WEB COMO ÚLTIMO RECURSO NO CIFRA CLUB
@@ -5559,26 +5600,12 @@ app.get(
             );
 
         if (cached) {
+            res.set('X-Cifra-Resolution', 'memory');
             console.log(
                 `⚡ CACHE: ${artist} - ${track}`
             );
 
             return sendSongWithReference(res, cached,
-                { key: cacheKey, artist, track }, enrichYoutubeReference);
-        }
-
-        let cacheTimer;
-        const globalCached = await Promise.race([
-            getGlobalSongCache(artist, track),
-            new Promise(resolve => { cacheTimer = setTimeout(() => resolve(null), 750); })
-        ]).finally(() => clearTimeout(cacheTimer));
-
-        if (globalCached && (!selectedSourceUrl || safeSourceUrl(globalCached.url) === selectedSourceUrl)) {
-            console.log(
-                `⚡ CACHE GLOBAL: ${artist} - ${track}`
-            );
-
-            return sendSongWithReference(res, globalCached,
                 { key: cacheKey, artist, track }, enrichYoutubeReference);
         }
 
@@ -5595,6 +5622,7 @@ app.get(
                         cacheKey
                     );
 
+                res.set('X-Cifra-Resolution', 'shared');
                 return sendSongWithReference(res, result,
                     { key: cacheKey, artist, track }, enrichYoutubeReference);
             } catch (error) {
@@ -5619,12 +5647,19 @@ app.get(
         // ====================================================
 
         const promise =
-            (async () => {
+            resolveCacheAndSource({
+                readCache: () => getGlobalSongCache(artist, track),
+                acceptCache: cached => cached && (!selectedSourceUrl || safeSourceUrl(cached.url) === selectedSourceUrl),
+                onResult: detail => {
+                    res.set('X-Cifra-Resolution', detail.origin);
+                    console.log(JSON.stringify({event: 'chord_resolution', ...detail}));
+                },
+                loadSource: async ({signal, timeoutMs}) => {
                 const result =
                     await findSong(
                         artist,
                         track,
-                        {sourceUrl: safeSourceUrl(req.query.sourceUrl)}
+                        {sourceUrl: selectedSourceUrl, signal, timeoutMs: Math.min(8000, timeoutMs)}
                     );
 
                 const response = repairSongKeyInfo({
@@ -5685,7 +5720,8 @@ app.get(
                 );
 
                 return response;
-            })();
+                }
+            });
 
         inFlight.set(
             cacheKey,

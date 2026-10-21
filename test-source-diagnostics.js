@@ -5,6 +5,18 @@ const {withSources, sourceBlocked, sourceFailure, sourceFailures, sourceAttempt,
 const url = 'https://www.cifraclub.com.br/lauriete/joao-viu/';
 const error = status => ({response: {status}});
 
+test('cache winner can cancel an ongoing source search through its parent signal', async () => {
+    const controller = new AbortController();
+    let transportSignal;
+    const search = withSources(async () => {
+        transportSignal = sourceRequestOptions().signal;
+        controller.abort();
+        return new Promise(() => {});
+    }, {signal: controller.signal, timeoutMs: 1000});
+    await assert.rejects(search, error => error.code === 'SEARCH_TIMEOUT');
+    assert.equal(transportSignal.aborted, true);
+});
+
 test('one source deadline aborts transport and prevents further source attempts', async () => {
     let signal, afterAbort;
     await assert.rejects(withSources(async () => {
