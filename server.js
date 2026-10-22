@@ -17,6 +17,7 @@ const { catalogTitle } = require('./lib/song-title');
 const {resolveCacheAndSource} = require('./lib/cache-source-race');
 const {createStructuredDiscovery, hymnNumber, numberedHymnMatch} = require('./lib/structured-discovery');
 const {createArtistCatalogDiscovery} = require('./lib/artist-catalog-discovery');
+const {createSourceHttp} = require('./lib/source-http');
 const { withSources, sourceFailure, sourceFailures, sourceBlocked, sourceAttempt, sourceAttempts, sourceRequestOptions,
     contentFinding, contentFindings } = require('./lib/source-diagnostics');
 axios.interceptors.request.use(config => {
@@ -45,6 +46,7 @@ const discoveryStore = firestoreDiscoveryStore(() => {
     return getFirebaseAdmin().firestore();
 });
 const discoveryIndex = createDiscoveryIndex({store: discoveryStore});
+const getSourceHtml = createSourceHttp({get: (...args) => axios.get(...args), getBudget: sourceRequestOptions});
 const discoverStructured = createStructuredDiscovery({get: (...args) => axios.get(...args),
     onAttempt: sourceAttempt, onFailure: sourceFailure});
 const discoverAlternativeCatalog = createArtistCatalogDiscovery({get: (...args) => axios.get(...args),
@@ -206,7 +208,7 @@ app.get('/', (req, res) => {
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
         songLinksRevision: 6,
-        searchRevision: '2026-10-21-catalog-3',
+        searchRevision: '2026-10-22-transport-4',
         searchReranker: localScorer.status(),
         timestamp: new Date().toISOString()
     });
@@ -3118,8 +3120,9 @@ async function fetchHtml(url, responseEncoding = 'utf8') {
     if (sourceBlocked(url)) return null;
     const started = Date.now();
     try {
-        const response = await axios.get(url, {
+        const response = await getSourceHtml(url, {
             responseEncoding,
+            maxContentLength: 1500000,
             timeout: REQUEST_TIMEOUT,
             headers: HEADERS,
             maxRedirects: 5,
@@ -3132,7 +3135,8 @@ async function fetchHtml(url, responseEncoding = 'utf8') {
                 status >= 200 && status < 400
         });
 
-        sourceAttempt(url, response.status, Date.now() - started, response.headers, 'response_received');
+        sourceAttempt(url, response.status, Date.now() - started, response.headers,
+            response.transport === 'impit' ? 'http_403_recovered_impit' : 'response_received');
         return {
             html: response.data,
             finalUrl: response.request?.res?.responseUrl || url,
@@ -3569,12 +3573,8 @@ function cleanSongContent(content) {
 // METADADOS
 // ============================================================
 
-// FIX: $('h2').first() estava pegando um heading de navegação
-// ("Menu principal") em quase toda página, não o nome do artista.
-// A description da página segue o padrão "Título - Artista - Cifra
-// Club" de forma bem mais confiável, então agora ela é tentada
-// primeiro; o h2 só entra como fallback, e nunca se o texto bater
-// com um valor conhecido de "lixo" de navegação.
+// Navigation headings precede the artist in the current layout. Use page metadata
+// anchored to the visible song title, not the first heading or the requested artist.
 const BAD_ARTIST_VALUES = new Set([
     'menu principal',
     'menu',
@@ -3589,6 +3589,12 @@ function extractPageMetadata($) {
 
     let artist = '';
 
+    const documentTitle = $('title').first().text().trim();
+    const pageIdentity = documentTitle.replace(/\s+-\s+Cifra Club\s*$/i, '');
+    if (title && pageIdentity !== documentTitle && pageIdentity.startsWith(`${title} - `)) {
+        artist = pageIdentity.slice(title.length + 3).trim();
+    }
+
     const description =
         $('meta[name="description"]')
             .attr('content') || '';
@@ -3598,7 +3604,7 @@ function extractPageMetadata($) {
             /-\s*([^-]+?)\s*-\s*Cifra Club/i
         );
 
-    if (descMatch) {
+    if (!artist && descMatch) {
         artist = descMatch[1].trim();
     }
 
