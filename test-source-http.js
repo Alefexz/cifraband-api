@@ -95,3 +95,46 @@ test('non-UTF8 response encoding remains explicit', async () => {
     const get = setup(async () => new Response(Uint8Array.from([0x43, 0xe3, 0x6f])));
     assert.equal((await get(URL, {responseEncoding: 'latin1'})).data, 'C\u00e3o');
 });
+test('proven compatible client is reused without repeating rejected requests', async () => {
+    let normal = 0, native = 0;
+    const get = setup(async () => { native++; return new Response('C G'); },
+        {get: async () => { normal++; throw denied(403); }});
+    await get(URL);
+    const second = await get(URL);
+    assert.equal(normal, 1);
+    assert.equal(native, 2);
+    assert.equal(second.recoveredStatus, null);
+});
+test('429 cooldown applies across searches and respects Retry-After', async () => {
+    let time = 1000, calls = 0;
+    const get = setup(async () => {
+        calls++;
+        return new Response(null, {status: 429, headers: {'retry-after': '120'}});
+    }, {now: () => time});
+    await assert.rejects(get(URL));
+    time += 60000;
+    await assert.rejects(get(URL), {code: 'ERR_SOURCE_COOLDOWN'});
+    assert.equal(calls, 1);
+    time += 61000;
+    await assert.rejects(get(URL), {code: 'ERR_SOURCE_HTTP'});
+    assert.equal(calls, 2);
+});
+test('primary adapter uses compatible transport without an initial rejected request', async () => {
+    let calls = 0;
+    const get = setup(async () => new Response('C G'), {preferCompatible: true, get: async (url, options) => {
+        calls++;
+        assert.equal(url, URL);
+        assert.equal(typeof options.adapter, 'function');
+        return options.adapter(options);
+    }});
+    assert.equal((await get(URL)).data, 'C G');
+    assert.equal(calls, 1);
+});
+test('primary adapter can be disabled without changing other providers', async () => {
+    const get = setup(() => assert.fail('No compatible client'), {preferCompatible: true,
+        enabled: () => false, get: async (_, options) => {
+            assert.equal(options.adapter, undefined);
+            return {data: 'legacy'};
+        }});
+    assert.equal((await get(URL)).data, 'legacy');
+});

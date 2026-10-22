@@ -46,7 +46,8 @@ const discoveryStore = firestoreDiscoveryStore(() => {
     return getFirebaseAdmin().firestore();
 });
 const discoveryIndex = createDiscoveryIndex({store: discoveryStore});
-const getSourceHtml = createSourceHttp({get: (...args) => axios.get(...args), getBudget: sourceRequestOptions});
+const getSourceHtml = createSourceHttp({get: (...args) => axios.get(...args), getBudget: sourceRequestOptions,
+    preferCompatible: true});
 const discoverStructured = createStructuredDiscovery({get: (...args) => axios.get(...args),
     onAttempt: sourceAttempt, onFailure: sourceFailure});
 const discoverAlternativeCatalog = createArtistCatalogDiscovery({get: (...args) => axios.get(...args),
@@ -100,7 +101,7 @@ const MAX_CACHE_ITEMS = 500;
 
 const REQUEST_TIMEOUT = 9000;
 
-const DIRECT_CONCURRENCY = 6;
+const DIRECT_CONCURRENCY = 2;
 const CATALOG_CONCURRENCY = 5;
 const SEARCH_CONCURRENCY = 5;
 const WEB_SEARCH_CONCURRENCY = 4;
@@ -208,7 +209,7 @@ app.get('/', (req, res) => {
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
         songLinksRevision: 6,
-        searchRevision: '2026-10-22-transport-4',
+        searchRevision: '2026-10-22-transport-5',
         searchReranker: localScorer.status(),
         timestamp: new Date().toISOString()
     });
@@ -3136,7 +3137,7 @@ async function fetchHtml(url, responseEncoding = 'utf8') {
         });
 
         sourceAttempt(url, response.status, Date.now() - started, response.headers,
-            response.transport === 'impit' ? 'http_403_recovered_impit' : 'response_received');
+            response.transport === 'impit' ? (response.recoveredStatus ? 'http_403_recovered_impit' : 'response_received_impit') : 'response_received');
         return {
             html: response.data,
             finalUrl: response.request?.res?.responseUrl || url,
@@ -4030,7 +4031,7 @@ async function searchDirect(
         generateDirectCandidates(
             artist,
             track
-        );
+        ).slice(0, 6);
 
     console.log(
         `🎯 Candidatos diretos: ${candidates.length}`
@@ -4181,12 +4182,11 @@ async function fetchArtistCatalog(
 
 async function searchArtistCatalog(
     artist,
-    track
+    track,
+    primaryOnly = false
 ) {
     const artistSlugs =
-        generateArtistSlugs(
-            artist
-        );
+        generateArtistSlugs(artist).slice(0, primaryOnly ? 1 : 3);
 
     const allCandidates = [];
 
@@ -4810,7 +4810,7 @@ async function searchAlternativeProvidersDirect(
     }
 
     const items =
-        [...unique.values()];
+        [...unique.values()].slice(0, 12);
 
     console.log(
         `🧭 Provedores alternativos diretos: ${items.length} candidatos`
@@ -5279,6 +5279,14 @@ async function findSongInternal(
         if (best) return best;
         throw Error('No validated alternative catalog candidate');
     });
+    const primaryCatalogTask = searchArtistCatalog(artist, track, true).then(results => {
+        const safe = results.filter(result => isSearchResultSafeForRequest(artist, track, result));
+        allResults.push(...safe);
+        const best = chooseBestResult(safe);
+        if (best) return best;
+        throw Error('No validated primary catalog candidate');
+    });
+    void primaryCatalogTask.catch(() => {});
     // Observe rejection immediately while structured discovery gets its head start.
     void catalogTask.catch(() => {});
     const structuredTask = searchStructuredCifraClub(artist, track).then(results => {
@@ -5289,7 +5297,7 @@ async function findSongInternal(
         throw Error('No validated structured candidate');
     });
     // Give real addresses a short head start, without waiting indefinitely on discovery.
-    const structuredEarly = await bounded(() => Promise.any([structuredTask, catalogTask]), 400, null);
+    const structuredEarly = await bounded(() => Promise.any([structuredTask, catalogTask, primaryCatalogTask]), 900, null);
     if (structuredEarly) return structuredEarly;
     const directCandidate = async (search, alternative = false) => {
         const candidates = (await search(artist, track))
@@ -5309,6 +5317,7 @@ async function findSongInternal(
             })] : []),
             structuredTask,
             catalogTask,
+            primaryCatalogTask,
             directCandidate(searchDirect),
             directCandidate(searchAlternativeProvidersDirect, true)
         ]);
