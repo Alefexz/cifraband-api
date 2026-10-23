@@ -134,6 +134,8 @@ test('full pipeline aborts stalled HTTP at the shared deadline', async () => {
     const axios = require('axios');
     const {findSong} = require('./server');
     const adapter = axios.defaults.adapter;
+    const originalGet = axios.get;
+    axios.get = (url, config) => axios({...config, url, method: 'get', adapter: axios.defaults.adapter});
     const signals = [];
     axios.defaults.adapter = config => new Promise((resolve, reject) => {
         signals.push(config.signal);
@@ -148,13 +150,15 @@ test('full pipeline aborts stalled HTTP at the shared deadline', async () => {
         const attempts = signals.length;
         await new Promise(resolve => setTimeout(resolve, 50));
         assert.equal(signals.length, attempts);
-    } finally { axios.defaults.adapter = adapter; }
+    } finally { axios.defaults.adapter = adapter; axios.get = originalGet; }
 });
 
 test('validated alternative returns without waiting for stalled source variants', async () => {
     const axios = require('axios');
     const {findSong} = require('./server');
     const adapter = axios.defaults.adapter;
+    const originalGet = axios.get;
+    axios.get = (url, config) => axios({...config, url, method: 'get', adapter: axios.defaults.adapter});
     const signals = [];
     axios.defaults.adapter = config => {
         signals.push(config.signal);
@@ -173,5 +177,5 @@ test('validated alternative returns without waiting for stalled source variants'
         const attempts = signals.length;
         await new Promise(resolve => setTimeout(resolve, 50));
         assert.equal(signals.length, attempts);
-    } finally { axios.defaults.adapter = adapter; }
+    } finally { axios.defaults.adapter = adapter; axios.get = originalGet; }
 });

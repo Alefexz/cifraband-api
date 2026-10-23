@@ -18,6 +18,7 @@ const {resolveCacheAndSource} = require('./lib/cache-source-race');
 const {createStructuredDiscovery, hymnNumber, numberedHymnMatch} = require('./lib/structured-discovery');
 const {createArtistCatalogDiscovery} = require('./lib/artist-catalog-discovery');
 const {createSourceHttp} = require('./lib/source-http');
+const {canSearchHymnExcerpt, matchesHymnExcerpt} = require('./lib/hymn-excerpt');
 const { withSources, sourceFailure, sourceFailures, sourceBlocked, sourceAttempt, sourceAttempts, sourceRequestOptions,
     contentFinding, contentFindings } = require('./lib/source-diagnostics');
 axios.interceptors.request.use(config => {
@@ -209,7 +210,7 @@ app.get('/', (req, res) => {
         service: 'Cifra Band API',
         version: 'V5-Intelligent',
         songLinksRevision: 6,
-        searchRevision: '2026-10-22-transport-5',
+        searchRevision: '2026-10-22-transport-6',
         searchReranker: localScorer.status(),
         timestamp: new Date().toISOString()
     });
@@ -2582,7 +2583,8 @@ function isSearchResultSafeForRequest(artist, track, result) {
         return false;
     }
 
-    if (!matchesRequestedTitle(artist, track, result.title || '')) {
+    if (!matchesRequestedTitle(artist, track, result.title || '') &&
+        !matchesHymnExcerpt(artist, track, result.content || '')) {
         return false;
     }
 
@@ -3906,7 +3908,9 @@ async function inspectSongUrl(
     const pageArtist =
         metadata.artist || requestedArtist;
 
-    const score = numberedHymnMatch(requestedArtist, requestedTrack, pageTitle) &&
+    const matchedExcerpt = normalizeText(requestedArtist) === normalizeText(pageArtist) &&
+        matchesHymnExcerpt(requestedArtist, requestedTrack, content);
+    const score = matchedExcerpt ? 95 : numberedHymnMatch(requestedArtist, requestedTrack, pageTitle) &&
         normalizeText(requestedArtist) === normalizeText(pageArtist) ? 100 :
         scoreSong(requestedArtist, requestedTrack, pageArtist, pageTitle);
 
@@ -3916,7 +3920,7 @@ async function inspectSongUrl(
 
     if (
         score < 45 ||
-        !matchesRequestedTitle(requestedArtist, requestedTrack, pageTitle) ||
+        (!matchesRequestedTitle(requestedArtist, requestedTrack, pageTitle) && !matchedExcerpt) ||
         !hasCompositeTrackCoverage(
             requestedTrack,
             pageTitle,
@@ -3936,6 +3940,8 @@ async function inspectSongUrl(
     return {
         title: pageTitle,
         artist: pageArtist,
+        ...(matchedExcerpt && !matchesRequestedTitle(requestedArtist, requestedTrack, pageTitle)
+            ? {matchedBy: 'hymn_lyric_excerpt'} : {}),
 
         originalKey:
             keyInfo.originalKey,
@@ -4446,13 +4452,13 @@ async function searchCifraClub(
 
 async function searchStructuredCifraClub(artist, track) {
     const links = (await discoverStructured(artist, track)).filter(item =>
-        matchesRequestedTitle(artist, track, item.title));
+        matchesRequestedTitle(artist, track, item.title) || canSearchHymnExcerpt(artist, track));
     const ranked = links.map(item => ({...item, score: numberedHymnMatch(artist, track, item.title)
         ? 100 : scoreSong(artist, track, item.artist, item.title)}))
         .sort((a, b) => b.score - a.score);
     rememberDiscoveredLinks(artist, ranked);
     for (const item of ranked) contentFinding(item.url, 'discovered_url');
-    return runConcurrent(ranked, 2, item => inspectSongUrl(item.url, artist, track),
+    return runConcurrent(ranked.slice(0, 3), 2, item => inspectSongUrl(item.url, artist, track),
         result => isSearchResultSafeForRequest(artist, track, result));
 }
 
